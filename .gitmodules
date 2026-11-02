@@ -1,0 +1,6 @@
+[submodule "libs/JUCE"]
+	path = libs/JUCE
+	url = https://github.com/juce-framework/JUCE.git
+[submodule "libs/taglib"]
+	path = libs/taglib
+	url = https://github.com/taglib/taglib.git

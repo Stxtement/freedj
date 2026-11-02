@@ -1,0 +1,5 @@
+build/
+.vs/
+*.user
+models/
+libs/onnxruntime-dml/pkg.zip
