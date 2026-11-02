@@ -36,6 +36,23 @@ struct TrackRecord
     double loudnessDb = 0.0;
     int manualFlags = 0;          // ManualFlag bits: values the user set by hand are never overwritten by analysis
 
+    // Automatic genre detection (Genre/). Stored apart from `genre`, the user's own tag, which it never replaces.
+    juce::String genreAutoMain, genreAutoSub, genreAutoCategory;   // "House", "Tech House", "Electronic"
+    double genreConfidence = 0.0;      // probability of the top style, 0..1
+    juce::String genreAlternatives;    // JSON: [{"style":"Electronic---Techno","p":0.3}, ...]
+    int genreVersion = 0;              // 0 = not detected yet, -1 = failed
+
+    // What the library shows as genre: the user's tag, otherwise a confident automatic result.
+    juce::String displayGenre() const
+    {
+        if (genre.isNotEmpty())
+            return genre;
+        if (genreAutoMain.isNotEmpty() && genreConfidence >= 0.25)
+            return genreAutoSub.isNotEmpty() && genreAutoSub != genreAutoMain ? genreAutoMain + " / " + genreAutoSub : genreAutoMain;
+        return {};
+    }
+    bool isGenreAutomatic() const { return genre.isEmpty() && genreAutoMain.isNotEmpty() && genreConfidence >= 0.25; }
+
     enum ManualFlag { manualBpm = 1, manualKey = 2, manualGrid = 4, manualGenre = 8 };
     bool isManual (ManualFlag f) const { return (manualFlags & f) != 0; }
 

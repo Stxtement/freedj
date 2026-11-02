@@ -1,4 +1,4 @@
-#include "StemManager.h"
+﻿#include "StemManager.h"
 #include "Analysis/AudioAnalysis.h"
 #include <juce_cryptography/juce_cryptography.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -384,90 +384,13 @@ void StemManager::process (const Job& job)
     finish (job, std::move (set), {}, false);
 }
 
-//==============================================================================
 void StemManager::downloadModel (std::function<void (float)> onProgress, std::function<void (const juce::String&)> onFinished)
 {
-    if (downloading.exchange (true))
-        return;
-
-    struct Downloader : juce::Thread
-    {
-        Downloader (StemManager& o, juce::File target, std::function<void (float)> p, std::function<void (const juce::String&)> f)
-            : juce::Thread ("Model download"), owner (&o), file (std::move (target)), onProgress (std::move (p)), onFinished (std::move (f)) {}
-
-        void run() override
-        {
-            juce::String error;
-            file.getParentDirectory().createDirectory();
-            const auto part = file.withFileExtension (".onnx.part");
-            part.deleteFile();
-
-            juce::URL url (ModelInfo::downloadUrl);
-            std::unique_ptr<juce::InputStream> in (url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
-                                                                              .withConnectionTimeoutMs (20000)
-                                                                              .withNumRedirectsToFollow (8)));
-            if (in == nullptr)
-                error = "Could not connect to the download server.";
-            else
-            {
-                juce::FileOutputStream out (part);
-                if (out.failedToOpen())
-                    error = "Cannot write " + part.getFullPathName();
-                else
-                {
-                    juce::HeapBlock<char> buffer (1 << 20);
-                    juce::int64 total = 0;
-                    while (! threadShouldExit())
-                    {
-                        const int n = in->read (buffer, 1 << 20);
-                        if (n < 0) { error = "The download was interrupted."; break; }
-                        if (n == 0) break;
-                        if (! out.write (buffer, (size_t) n)) { error = "Disk full or write error."; break; }
-                        total += n;
-                        juce::MessageManager::callAsync ([w = juce::WeakReference<StemManager> (owner), p = onProgress, f = (float) total / (float) ModelInfo::sizeBytes]
-                                                         {
-                                                             if (w != nullptr && p)
-                                                                 p (juce::jlimit (0.0f, 1.0f, f));
-                                                         });
-                    }
-                    out.flush();
-                    if (threadShouldExit() && error.isEmpty())
-                        error = "cancelled";
-                }
-            }
-
-            if (error.isEmpty() && ! ModelInfo::isCompleteAndValid (part, true))
-                error = "The downloaded file is incomplete or does not match the expected checksum.";
-
-            if (error.isEmpty())
-            {
-                file.deleteFile();
-                if (! part.moveFileTo (file))
-                    error = "Cannot move the model into place.";
-            }
-            if (error.isNotEmpty())
-                part.deleteFile();
-
-            juce::MessageManager::callAsync ([w = juce::WeakReference<StemManager> (owner), f = onFinished, error]
-                                             {
-                                                 if (w != nullptr)
-                                                 {
-                                                     w->downloading = false;
-                                                     if (f) f (error);
-                                                 }
-                                             });
-        }
-
-        juce::WeakReference<StemManager> owner;
-        juce::File file;
-        std::function<void (float)> onProgress;
-        std::function<void (const juce::String&)> onFinished;
-    };
-
-    if (downloadThread != nullptr)
-        downloadThread->stopThread (10000);
-    downloadThread = std::make_unique<Downloader> (*this, getModelFile(), std::move (onProgress), std::move (onFinished));
-    downloadThread->startThread (juce::Thread::Priority::low);
+    download.start (ModelInfo::downloadUrl, getModelFile(), ModelInfo::sizeBytes, ModelInfo::sha256, std::move (onProgress), std::move (onFinished));
 }
 
+bool StemManager::isDownloading() const
+{
+    return download.isRunning();
+}
 } // namespace pathboard::stems

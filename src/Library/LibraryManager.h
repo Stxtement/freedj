@@ -47,6 +47,8 @@ public:
     bool setRating (juce::int64 id, int rating);
     bool applyAnalysis (juce::int64 id, const LibraryDatabase::AnalysisUpdate& update);
     bool markAnalysisFailed (juce::int64 id);
+    bool applyGenre (juce::int64 id, const LibraryDatabase::GenreUpdate& update);
+    bool markGenreFailed (juce::int64 id);
     bool requestReanalysis (const std::vector<juce::int64>& ids);
     bool setManualGrid (juce::int64 id, double bpm, double firstBeat, int downbeat);
     bool resetManualCorrections (juce::int64 id);   // back to the automatic values (re-analysis follows)

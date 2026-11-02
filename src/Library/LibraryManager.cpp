@@ -224,6 +224,22 @@ bool LibraryManager::applyAnalysis (juce::int64 id, const LibraryDatabase::Analy
     return true;
 }
 
+bool LibraryManager::applyGenre (juce::int64 id, const LibraryDatabase::GenreUpdate& update)
+{
+    if (! database.saveGenre (id, update) || ! refreshTrack (id))
+        return false;
+    sendChangeMessage();
+    return true;
+}
+
+bool LibraryManager::markGenreFailed (juce::int64 id)
+{
+    if (! database.markGenreFailed (id) || ! refreshTrack (id))
+        return false;
+    sendChangeMessage();
+    return true;
+}
+
 bool LibraryManager::markAnalysisFailed (juce::int64 id)
 {
     if (! database.markAnalysisFailed (id, juce::Time::currentTimeMillis()) || ! refreshTrack (id))

@@ -69,7 +69,7 @@ namespace
             case TrackColumn::album:      return compareText (a.album, b.album);
             case TrackColumn::bpm:        return compareNumbers (a.bpm, b.bpm);
             case TrackColumn::key:        return compareKeys (a.key, b.key);
-            case TrackColumn::genre:      return compareText (a.genre, b.genre);
+            case TrackColumn::genre:      return compareText (a.displayGenre(), b.displayGenre());
             case TrackColumn::length:     return compareNumbers (a.lengthSeconds, b.lengthSeconds);
             case TrackColumn::rating:     return compareNumbers (a.rating, b.rating);
             case TrackColumn::path:       return compareText (a.path, b.path);
@@ -98,7 +98,7 @@ int compareKeys (const juce::String& a, const juce::String& b)
 
 juce::String buildSearchText (const TrackRecord& t)
 {
-    return (t.title + " " + t.artist + " " + t.remix + " " + t.album + " " + t.genre + " " + t.comment + " "
+    return (t.title + " " + t.artist + " " + t.remix + " " + t.album + " " + t.displayGenre() + " " + t.comment + " "
             + t.tags + " " + t.key + " " + juce::File (t.path).getFileName()).toLowerCase();
 }
 
@@ -128,7 +128,7 @@ std::vector<int> runQuery (const std::vector<TrackRecord>& tracks, const std::ve
         if (spec.minBpm > 0.0 && t.bpm < spec.minBpm) continue;
         if (spec.maxBpm > 0.0 && t.bpm > spec.maxBpm) continue;
         if (spec.keyFilter.isNotEmpty() && ! t.key.equalsIgnoreCase (spec.keyFilter)) continue;
-        if (spec.genreFilter.isNotEmpty() && ! t.genre.equalsIgnoreCase (spec.genreFilter)) continue;
+        if (spec.genreFilter.isNotEmpty() && ! t.displayGenre().containsIgnoreCase (spec.genreFilter)) continue;
         if (folder.isNotEmpty() && ! t.path.startsWithIgnoreCase (folder)) continue;
 
         bool allWords = true;
@@ -288,7 +288,7 @@ namespace
         else if (f == "artist") text = t.artist;
         else if (f == "remix") text = t.remix;
         else if (f == "album") text = t.album;
-        else if (f == "genre") text = t.genre;
+        else if (f == "genre") text = t.displayGenre();
         else if (f == "key") text = t.key;
         else if (f == "tags") text = t.tags;
         else if (f == "comment") text = t.comment;

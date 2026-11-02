@@ -73,6 +73,7 @@ function(pathboard_copy_runtime target)
 endfunction()
 
 add_library(pathboard_core STATIC
+    src/Genre/GenreClassifier.cpp
     src/Stems/StemCache.cpp
     src/Stems/StemManager.cpp
     src/Stems/StemSeparator.cpp
@@ -124,7 +125,7 @@ file(GLOB_RECURSE PATHBOARD_APP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/*.h")
 # Engine and library sources come from pathboard_core.
-list(FILTER PATHBOARD_APP_SOURCES EXCLUDE REGEX "src/(Controller/(ControllerManager|ControllerMapping)|Stems/(StemSeparator|StemCache|StemManager)|Analysis/(AnalysisManager|AudioAnalysis|OnlineFile)|Audio/DeckEngine|Mixer/MixerEngine|Library/(LibraryDatabase|LibraryManager|LibraryScanner|TrackMetadata|TrackQuery))\\.cpp$")
+list(FILTER PATHBOARD_APP_SOURCES EXCLUDE REGEX "src/(Genre/GenreClassifier|Controller/(ControllerManager|ControllerMapping)|Stems/(StemSeparator|StemCache|StemManager)|Analysis/(AnalysisManager|AudioAnalysis|OnlineFile)|Audio/DeckEngine|Mixer/MixerEngine|Library/(LibraryDatabase|LibraryManager|LibraryScanner|TrackMetadata|TrackQuery))\\.cpp$")
 
 target_sources(FreeDJ PRIVATE ${PATHBOARD_APP_SOURCES})
 
@@ -153,6 +154,7 @@ target_sources(FreeDJTests PRIVATE
     tests/AnalysisTests.cpp
     tests/StemTests.cpp
     tests/ControllerTests.cpp
+    tests/GenreTests.cpp
     tests/TestMain.cpp)
 
 target_compile_definitions(FreeDJTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)

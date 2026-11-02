@@ -49,6 +49,16 @@ public:
         double keyConfidence = 0.0, energy = 0.0, loudnessDb = 0.0;
     };
     bool saveAnalysis (juce::int64 id, const AnalysisUpdate& update);
+
+    // Automatic genre detection (separate from the user's own `genre` tag).
+    struct GenreUpdate
+    {
+        juce::String main, sub, category, alternativesJson;
+        double confidence = 0.0;
+        int version = 0;
+    };
+    bool saveGenre (juce::int64 id, const GenreUpdate& update);
+    bool markGenreFailed (juce::int64 id);
     bool markAnalysisFailed (juce::int64 id, juce::int64 timeMs);
     bool requestReanalysis (const std::vector<juce::int64>& ids);
     // Hand-corrected BPM and beat grid (sets the manual flags for BPM and grid).
@@ -85,7 +95,7 @@ public:
     bool backupTo (const juce::File& destination);
     juce::String getLastError() const;
 
-    static constexpr int schemaVersion = 2;
+    static constexpr int schemaVersion = 3;
 
 private:
     class Statement;

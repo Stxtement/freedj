@@ -38,6 +38,14 @@ int main (int argc, char* argv[])
         return 0;
     }
 
+    if (argc >= 3 && juce::String (argv[1]) == "--genre-probe")
+    {
+        juce::StringArray files;
+        for (int i = 2; i < argc; ++i)
+            files.add (juce::String::fromUTF8 (argv[i]));
+        return runGenreProbe (files);
+    }
+
     if (argc == 2 && juce::String (argv[1]) == "--midi-list")
     {
         for (const auto& d : juce::MidiInput::getAvailableDevices())

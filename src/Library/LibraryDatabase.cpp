@@ -9,7 +9,8 @@ namespace
     constexpr const char* trackColumns =
         "id,path,title,artist,remix,album,genre,comment,tags,key,format,year,rating,bitrate,play_count,"
         "bpm,length,size,modified,first_seen,last_played,missing,analysed,"
-        "analysis_version,analysed_at,fingerprint,bpm_conf,key_conf,first_beat,downbeat,variable,energy,loudness,manual_flags";
+        "analysis_version,analysed_at,fingerprint,bpm_conf,key_conf,first_beat,downbeat,variable,energy,loudness,manual_flags,"
+        "genre_main,genre_sub,genre_category,genre_conf,genre_alt,genre_version";
 
     const char* schemaSql = R"sql(
         CREATE TABLE tracks (
@@ -72,6 +73,16 @@ namespace
         ALTER TABLE tracks ADD COLUMN loudness REAL NOT NULL DEFAULT 0;
         ALTER TABLE tracks ADD COLUMN manual_flags INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX idx_tracks_fingerprint ON tracks(fingerprint);
+    )sql";
+
+    // Automatic genre detection lives in its own columns: the user's `genre` is never touched by it.
+    const char* migrationV3Sql = R"sql(
+        ALTER TABLE tracks ADD COLUMN genre_main TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tracks ADD COLUMN genre_sub TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tracks ADD COLUMN genre_category TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tracks ADD COLUMN genre_conf REAL NOT NULL DEFAULT 0;
+        ALTER TABLE tracks ADD COLUMN genre_alt TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tracks ADD COLUMN genre_version INTEGER NOT NULL DEFAULT 0;
     )sql";
 }
 
@@ -243,6 +254,8 @@ juce::Result LibraryDatabase::migrate()
             ok = exec (schemaSql);
         if (ok && version < 2)
             ok = exec (migrationV2Sql);
+        if (ok && version < 3)
+            ok = exec (migrationV3Sql);
         if (ok)
             ok = exec (("PRAGMA user_version=" + juce::String (schemaVersion)).toRawUTF8());
 
@@ -297,6 +310,12 @@ TrackRecord LibraryDatabase::readTrack (const Statement& s)
     t.energy = s.real (c++);
     t.loudnessDb = s.real (c++);
     t.manualFlags = s.integer (c++);
+    t.genreAutoMain = s.text (c++);
+    t.genreAutoSub = s.text (c++);
+    t.genreAutoCategory = s.text (c++);
+    t.genreConfidence = s.real (c++);
+    t.genreAlternatives = s.text (c++);
+    t.genreVersion = s.integer (c++);
     return t;
 }
 
@@ -366,6 +385,7 @@ bool LibraryDatabase::upsertTracks (std::vector<TrackRecord>& tracks)
         "bitrate=?11,length=?13,missing=0,"
         // A changed file invalidates its analysis; the new content has to be analysed again.
         "analysis_version=CASE WHEN modified<>?15 OR size<>?14 THEN 0 ELSE analysis_version END,"
+        "genre_version=CASE WHEN modified<>?15 OR size<>?14 THEN 0 ELSE genre_version END,"
         "size=?14,modified=?15,"
         // Hand-corrected values are never replaced by what the file's tags say.
         "genre=CASE WHEN (manual_flags&8)<>0 THEN genre ELSE ?6 END,"
@@ -468,6 +488,30 @@ bool LibraryDatabase::saveAnalysis (juce::int64 id, const AnalysisUpdate& u)
     return true;
 }
 
+bool LibraryDatabase::saveGenre (juce::int64 id, const GenreUpdate& u)
+{
+    const juce::ScopedLock sl (lock);
+    if (db == nullptr)
+        return false;
+    Statement s (db, "UPDATE tracks SET genre_main=?2,genre_sub=?3,genre_category=?4,genre_conf=?5,genre_alt=?6,genre_version=?7 WHERE id=?1");
+    if (! s.ok()) { setError (s.getError()); return false; }
+    s.bind (1, id);       s.bind (2, u.main);       s.bind (3, u.sub);      s.bind (4, u.category);
+    s.bind (5, u.confidence);  s.bind (6, u.alternativesJson);  s.bind (7, u.version);
+    if (s.step() != SQLITE_DONE) { setError (sqlite3_errmsg (db)); return false; }
+    return true;
+}
+
+bool LibraryDatabase::markGenreFailed (juce::int64 id)
+{
+    const juce::ScopedLock sl (lock);
+    if (db == nullptr)
+        return false;
+    Statement s (db, "UPDATE tracks SET genre_version=-1 WHERE id=?1");
+    if (! s.ok()) { setError (s.getError()); return false; }
+    s.bind (1, id);
+    return s.step() == SQLITE_DONE;
+}
+
 bool LibraryDatabase::markAnalysisFailed (juce::int64 id, juce::int64 timeMs)
 {
     const juce::ScopedLock sl (lock);
@@ -485,7 +529,7 @@ bool LibraryDatabase::requestReanalysis (const std::vector<juce::int64>& ids)
     const juce::ScopedLock sl (lock);
     if (db == nullptr)
         return false;
-    Statement s (db, "UPDATE tracks SET analysis_version=0 WHERE id=?1");
+    Statement s (db, "UPDATE tracks SET analysis_version=0,genre_version=0 WHERE id=?1");
     if (! s.ok()) { setError (s.getError()); return false; }
     if (! beginTransaction())
         return false;
