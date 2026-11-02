@@ -4,9 +4,11 @@
 #include "Audio/AudioEngine.h"
 #include "Controller/ControllerManager.h"
 #include "Decks/DeckComponent.h"
+#include "Effects/FxComponent.h"
 #include "Library/LibraryBrowser.h"
 #include "Library/LibraryManager.h"
 #include "Mixer/MixerComponent.h"
+#include "Spotify/SpotifyClient.h"
 #include "Stems/StemManager.h"
 #include "UI/DJLookAndFeel.h"
 #include "Waveform/WaveformDisplay.h"
@@ -70,7 +72,8 @@ private:
     static juce::File findModelFile();
     int analysisCheckCounter = 0;
     void precomputeStemsStep();   // needs <unordered_set>, included below
-    bool autoPrecomputeStems = true;
+    bool autoPrecomputeStems = false;   // heavy on the GPU/CPU: off until switched on (PRE-STEMS)
+    juce::ToggleButton preStemsButton { "PRE-STEMS" };
     std::unordered_set<juce::int64> stemPrepRequested;   // tracks already queued for background stems in this run
 
     juce::PropertiesFile& settings;
@@ -102,6 +105,8 @@ private:
     DeckComponent deckA { engine.getDeck (0), engine.getDeck (1), 0 };
     DeckComponent deckB { engine.getDeck (1), engine.getDeck (0), 1 };
     MixerComponent mixer { engine };
+    FxComponent fxStrip { engine.getMixer() };
+    int fxTarget = 2;   // the controller's FX section acts on: 0 = deck 1, 1 = deck 2, 2 = both
     LibraryBrowser browser { library };
 
     // Hardware controller: functions are registered as named actions, the mapping is data (editable, saved).
@@ -109,8 +114,10 @@ private:
     ControllerMapping controllerMapping = ControllerMapping::createDefaultFlx4();
     ControllerManager controller { actionRegistry, controllerMapping };
     std::array<bool, 2> jogTouched { false, false };
-    juce::Component::SafePointer<juce::DialogWindow> controllerDialog, audioDialog;
-    juce::TextButton controllerButton { "CONTROLLER" };
+    juce::Component::SafePointer<juce::DialogWindow> controllerDialog, audioDialog, spotifyDialog;
+    juce::TextButton controllerButton { "CONTROLLER" }, spotifyButton { "SPOTIFY" };
+    spotify::SpotifyClient spotifyClient { settings };
+    void showSpotify();
 
     struct PlayTracking
     {

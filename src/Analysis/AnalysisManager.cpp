@@ -294,6 +294,7 @@ void AnalysisManager::jobFinished (const Job& job, Result r)
         else
         {
             ok = false;
+            retriedIds.insert (job.id);   // failed in this run: the next try is in the next run
             library.markAnalysisFailed (job.id);
         }
     }

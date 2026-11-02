@@ -54,6 +54,8 @@ public:
     bool resetManualCorrections (juce::int64 id);   // back to the automatic values (re-analysis follows)
     bool recordPlay (juce::int64 id);
     bool removeTracks (const std::vector<juce::int64>& ids);
+    // Cleans pool / site clutter out of all titles and artists (see TrackTidy.h). Returns how many tracks changed.
+    int tidyAll();
 
     // Playlists
     std::vector<PlaylistInfo> getPlaylists() const { return database.getPlaylists(); }

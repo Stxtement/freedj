@@ -1,5 +1,6 @@
 ﻿#include "LibraryManager.h"
 #include "TrackMetadata.h"
+#include "TrackTidy.h"
 
 namespace pathboard
 {
@@ -193,6 +194,23 @@ bool LibraryManager::updateTrack (const TrackRecord& edited, bool writeToFile, j
 
     sendChangeMessage();
     return fileOk;
+}
+
+int LibraryManager::tidyAll()
+{
+    std::vector<TrackRecord> changed;
+    for (auto t : tracks)
+    {
+        if (t.title.trim().isEmpty())
+            t.title = juce::File (t.path).getFileNameWithoutExtension();   // untagged: the file name is the best title there is
+        if (tidyTrackText (t))
+            changed.push_back (std::move (t));
+    }
+
+    if (changed.empty() || ! database.updateTidiedTexts (changed))
+        return 0;
+    reload();
+    return (int) changed.size();
 }
 
 bool LibraryManager::setRating (juce::int64 id, int rating)

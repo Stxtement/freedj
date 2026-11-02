@@ -1,4 +1,5 @@
 #include "TrackMetadata.h"
+#include "TrackTidy.h"
 
 #include <fileref.h>
 #include <tag.h>
@@ -123,7 +124,7 @@ bool read (const juce::File& file, TrackRecord& out)
             }
         }
 
-        splitRemix (out.title, out.remix);
+        tidyTrackText (out);   // pool / site clutter out of title and artist, remix split off (see TrackTidy.h)
         return out.lengthSeconds > 0.0;
     }
     catch (...)

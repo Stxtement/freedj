@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Audio/DeckEngine.h"
+#include "Effects/Effects.h"
 #include <array>
 
 namespace pathboard
@@ -34,6 +35,9 @@ public:
     void setHeadphoneMix (float cueToMaster);     // 0 = cue only, 1 = master only
     void setHeadphoneVolume (float value);
 
+    // Effect rack of a deck (two slots), applied before the channel fader.
+    fx::EffectRack& getEffects (int deck) { return racks[(size_t) juce::jlimit (0, numDecks - 1, deck)]; }
+
     float getDeckLevel (int deck) const;
     float getMasterLevel (int channel) const;
     int getNumOutputChannels() const { return numActiveOutputs.load(); }
@@ -41,6 +45,7 @@ public:
 private:
     std::array<DeckEngine*, numDecks> decks;
     std::array<juce::AudioBuffer<float>, numDecks> deckBuffers;
+    std::array<fx::EffectRack, numDecks> racks;
     juce::AudioBuffer<float> masterBuffer, cueBuffer;
 
     std::atomic<float> crossfader { 0.0f };

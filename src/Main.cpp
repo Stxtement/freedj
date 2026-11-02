@@ -9,7 +9,8 @@ class FreeDJApplication : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override    { return JUCE_APPLICATION_NAME_STRING; }
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override           { return false; }
+    // One instance per library - except a test instance with its own data folder (PATHBOARD_DATA_DIR).
+    bool moreThanOneInstanceAllowed() override           { return juce::SystemStats::getEnvironmentVariable ("PATHBOARD_DATA_DIR", {}).isNotEmpty(); }
 
     void initialise (const juce::String&) override
     {

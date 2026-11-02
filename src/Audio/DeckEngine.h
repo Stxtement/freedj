@@ -96,6 +96,23 @@ public:
     double getOriginalBpm() const { return nativeBpm.load(); }
     double getPlaybackBpm() const { return getEffectiveBpm(); }
 
+    // Beat sync: this deck follows `master`'s playback tempo (times `factor`: 1, 0.5 or 2) and a phase loop in the
+    // audio thread keeps its beats on the master's beats, so the beat lines of both decks stay together instead
+    // of drifting apart. Nudging moves the phase to keep; the sync ends when the pitch is moved by hand, on scratch,
+    // on loading a track or clearSync().
+    void setSyncMaster (DeckEngine* master, double factor);
+    void clearSync();
+    void alignToMaster();   // message thread
+    bool isSynced() const { return syncMaster.load() != nullptr; }
+    // Tempo change against the track's own tempo that is audible now (follows the master while synced).
+    double getEffectivePitch() const;
+    // Phase distance to the master's beat grid in beats, -0.5..0.5 (0 when not synced / not playing).
+    double getSyncPhaseError() const { return syncPhaseError.load(); }
+
+    // Beat position (grid beats, wrapped at 4096) at the start of the latest audio block, for beat-synchronised
+    // effects. -1 when the deck does not play or has no tempo.
+    double getFxBeatPosition() const;
+
     // Beat grid in track time: beats at firstBeat + k * 60/nativeBpm; bars start where (k - downbeat) % 4 == 0.
     void setBeatGrid (double firstBeatSeconds, int downbeatIndex) { gridFirstBeat = firstBeatSeconds; gridDownbeat = downbeatIndex; }
     double getGridFirstBeat() const { return gridFirstBeat.load(); }
@@ -178,6 +195,18 @@ private:
     std::atomic<bool> loopActive { false };
     std::atomic<double> loopStartSamples { 0.0 };
     std::atomic<double> loopEndSamples { 0.0 };
+
+    // Beat sync. Written by the message thread (master, factor) and the audio thread (the rest).
+    std::atomic<DeckEngine*> syncMaster { nullptr };
+    std::atomic<double> syncFactor { 1.0 };
+    std::atomic<double> syncBaseRate { 0.0 };      // playback rate that matches the master, without the phase correction
+    std::atomic<double> syncPhaseError { 0.0 };
+    std::atomic<bool> alignRequested { false };
+    std::atomic<double> syncOffset { 0.0 };        // phase (in beats) to keep against the master; set by aligning / nudging
+    std::atomic<double> callbackStartPos { 0.0 };  // playhead at the start of the latest audio callback
+    std::atomic<unsigned> callbackSerial { 0 };    // counts audio callbacks; both decks run once per callback
+    double syncTrim = 0.0, syncRateNow = 0.0;      // audio thread
+    void updateSync (unsigned serial);
 
     std::atomic<double> nativeBpm { 0.0 }; // 0 == unknown
     std::atomic<double> gridFirstBeat { 0.0 };

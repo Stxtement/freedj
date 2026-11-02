@@ -197,23 +197,27 @@ void MixerComponent::resized()
     auto right = area.removeFromRight (colW);
     auto centre = area;
 
-    auto layoutChannel = [] (Channel& ch, juce::Rectangle<int> col)
+    // Each channel: the five knobs in a column on the outer side, the fader (with level meter and headphone cue)
+    // next to it on the side of the centre - so everything stays visible however low the mixer is.
+    auto layoutChannel = [] (Channel& ch, juce::Rectangle<int> col, bool knobsOnLeft)
     {
-        const int knob = juce::jmin (col.getWidth(), 52);
+        const int knobColumnWidth = juce::jmax (40, (int) (col.getWidth() * 0.55f));
+        auto knobs = knobsOnLeft ? col.removeFromLeft (knobColumnWidth) : col.removeFromRight (knobColumnWidth);
+
+        const int slotH = knobs.getHeight() / 5;
+        const int knob = juce::jmin (knobs.getWidth(), slotH - 12, 52);   // leaves room for the label under each knob
         for (auto* s : { &ch.gain, &ch.high, &ch.mid, &ch.low, &ch.filter })
-        {
-            s->setBounds (col.removeFromTop (knob).withSizeKeepingCentre (knob, knob));
-            col.removeFromTop (12);
-        }
-        ch.cueButton.setBounds (col.removeFromTop (26).reduced (4, 0));
+            s->setBounds (knobs.removeFromTop (slotH).withSizeKeepingCentre (knob, knob));
+
+        ch.cueButton.setBounds (col.removeFromTop (26).reduced (2, 0));
         col.removeFromTop (6);
-        auto meter = col.removeFromRight (10);
+        auto meter = knobsOnLeft ? col.removeFromRight (10) : col.removeFromLeft (10);
         ch.meter.setBounds (meter);
-        ch.fader.setBounds (col);
+        ch.fader.setBounds (col.reduced (2, 0));
     };
 
-    layoutChannel (channels[0], left);
-    layoutChannel (channels[1], right);
+    layoutChannel (channels[0], left, true);
+    layoutChannel (channels[1], right, false);
 
     const int knob = juce::jmin (centre.getWidth(), 48);
     for (auto* s : { &masterVolume, &boothVolume, &headphoneMix, &headphoneVolume })

@@ -205,6 +205,13 @@ ControllerMapping ControllerMapping::createDefaultFlx4()
     add ("browser.press",         true,  6, 0x40, ControlKind::button);
     add ("browser.load.deck1",    true,  6, 0x46, ControlKind::button);
     add ("browser.load.deck2",    true,  6, 0x47, ControlKind::button);
+
+    // Beat FX section (channel 5). Like the rest of this mapping these numbers are a guess - check them with
+    // the MIDI monitor and fix them with MIDI learn if a control does something else.
+    add ("fx.onoff",              true,  4, 0x47, ControlKind::button, true);
+    add ("fx.target",             true,  4, 0x48, ControlKind::button);
+    add ("fx.select.next",        true,  4, 0x4A, ControlKind::button);
+    add ("fx.depth",              false, 4, 0x02, ControlKind::absolute14);
     return m;
 }
 

@@ -76,6 +76,9 @@ add_library(pathboard_core STATIC
     src/Genre/GenreClassifier.cpp
     src/Genre/GenreTaxonomy.cpp
     src/Library/SmartMatch.cpp
+    src/Effects/Effects.cpp
+    src/Spotify/SpotifyClient.cpp
+    src/Spotify/SpotifyMatch.cpp
     src/Stems/ModelDownload.cpp
     src/Stems/StemCache.cpp
     src/Stems/StemManager.cpp
@@ -91,7 +94,8 @@ add_library(pathboard_core STATIC
     src/Library/LibraryManager.cpp
     src/Library/LibraryScanner.cpp
     src/Library/TrackMetadata.cpp
-    src/Library/TrackQuery.cpp)
+    src/Library/TrackQuery.cpp
+    src/Library/TrackTidy.cpp)
 
 target_include_directories(pathboard_core PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_include_directories(pathboard_core PRIVATE ${TAGLIB_INCLUDE_DIRS})
@@ -128,7 +132,7 @@ file(GLOB_RECURSE PATHBOARD_APP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_SOURCE_DIR}/src/*.h")
 # Engine and library sources come from pathboard_core.
-list(FILTER PATHBOARD_APP_SOURCES EXCLUDE REGEX "src/(Genre/(GenreClassifier|GenreTaxonomy)|Library/SmartMatch|Stems/ModelDownload|Controller/(ControllerManager|ControllerMapping)|Stems/(StemSeparator|StemCache|StemManager)|Analysis/(AnalysisManager|AudioAnalysis|OnlineFile)|Audio/DeckEngine|Mixer/MixerEngine|Library/(LibraryDatabase|LibraryManager|LibraryScanner|TrackMetadata|TrackQuery))\\.cpp$")
+list(FILTER PATHBOARD_APP_SOURCES EXCLUDE REGEX "src/(Genre/(GenreClassifier|GenreTaxonomy)|Library/SmartMatch|Effects/Effects|Spotify/(SpotifyClient|SpotifyMatch)|Stems/ModelDownload|Controller/(ControllerManager|ControllerMapping)|Stems/(StemSeparator|StemCache|StemManager)|Analysis/(AnalysisManager|AudioAnalysis|OnlineFile)|Audio/DeckEngine|Mixer/MixerEngine|Library/(LibraryDatabase|LibraryManager|LibraryScanner|TrackMetadata|TrackQuery|TrackTidy))\\.cpp$")
 
 target_sources(FreeDJ PRIVATE ${PATHBOARD_APP_SOURCES})
 
@@ -159,6 +163,8 @@ target_sources(FreeDJTests PRIVATE
     tests/ControllerTests.cpp
     tests/GenreTests.cpp
     tests/MatchTests.cpp
+    tests/EffectsTests.cpp
+    tests/TidyTests.cpp
     tests/TestMain.cpp)
 
 target_compile_definitions(FreeDJTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)

@@ -463,6 +463,30 @@ bool LibraryDatabase::setTrackRating (juce::int64 id, int rating)
     return s.step() == SQLITE_DONE;
 }
 
+bool LibraryDatabase::updateTidiedTexts (const std::vector<TrackRecord>& tracks)
+{
+    const juce::ScopedLock sl (lock);
+    if (db == nullptr)
+        return false;
+
+    Statement s (db,
+        "UPDATE tracks SET title=?2,artist=?3,remix=?4,"
+        "key=CASE WHEN (manual_flags&2)<>0 THEN key ELSE ?5 END,"
+        "bpm=CASE WHEN (manual_flags&1)<>0 THEN bpm ELSE ?6 END WHERE id=?1");
+    if (! s.ok()) { setError (s.getError()); return false; }
+    if (! beginTransaction())
+        return false;
+
+    for (const auto& t : tracks)
+    {
+        s.bind (1, t.id);  s.bind (2, t.title);  s.bind (3, t.artist);  s.bind (4, t.remix);
+        s.bind (5, t.key); s.bind (6, t.bpm);
+        if (s.step() != SQLITE_DONE) { setError (sqlite3_errmsg (db)); s.reset(); rollback(); return false; }
+        s.reset();
+    }
+    return commit();
+}
+
 bool LibraryDatabase::saveAnalysis (juce::int64 id, const AnalysisUpdate& u)
 {
     const juce::ScopedLock sl (lock);

@@ -69,12 +69,14 @@ public:
 
 private:
     class Sidebar;
-    enum class View { allSongs, favorites, recentlyPlayed, history, missing, duplicates, folder, playlist };
+    enum class View { allSongs, favorites, recentlyPlayed, history, missing, duplicates, folder, playlist,
+                      recentlyAdded, notAnalysed, noGenre, tempo };
     struct ViewSelection
     {
         View view = View::allSongs;
         juce::int64 playlistId = 0;
         juce::String folder;
+        double minBpm = 0.0, maxBpm = 0.0;   // View::tempo
     };
 
     // TableListBoxModel

@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "Controller/ControllerSettingsComponent.h"
+#include "Spotify/SpotifyComponent.h"
 
 namespace pathboard
 {
@@ -7,7 +8,7 @@ namespace pathboard
 namespace
 {
     constexpr const char* audioDeviceKey = "audioDeviceState";
-    constexpr const char* libraryColumnsKey = "libraryColumns";
+    constexpr const char* libraryColumnsKey = "libraryColumns2";   // new default column order (earlier layouts are dropped once)
     constexpr const char* stemQualityKey = "stemQuality";
     constexpr const char* autoStemsKey = "autoStems";
     constexpr const char* smartMatchKey = "smartMatch";
@@ -50,8 +51,23 @@ MainComponent::MainComponent (juce::PropertiesFile& s) : settings (s)
     controllerButton.setTooltip ("Connect and configure the DJ controller (MIDI mapping, MIDI learn, monitor)");
     controllerButton.onClick = [this] { showControllerSettings(); };
 
-    for (auto* c : std::initializer_list<juce::Component*> { &titleLabel, &statusLabel, &settingsButton, &controllerButton,
-                                                             &waveA, &waveB, &deckA, &deckB, &mixer, &browser })
+    autoPrecomputeStems = settings.getBoolValue ("autoPrecomputeStems", false);
+    preStemsButton.setToggleState (autoPrecomputeStems, juce::dontSendNotification);
+    preStemsButton.setColour (juce::ToggleButton::textColourId, Colours::textDim);
+    preStemsButton.setTooltip ("Calculate stems for the library in the background while no deck plays.\n"
+                               "Uses the graphics card / processor heavily - switch it off if other programs (voice chat, streaming) stutter.");
+    preStemsButton.onClick = [this]
+    {
+        autoPrecomputeStems = preStemsButton.getToggleState();
+        settings.setValue ("autoPrecomputeStems", autoPrecomputeStems);
+    };
+    addAndMakeVisible (preStemsButton);
+
+    spotifyButton.setTooltip ("Your Spotify playlists, matched against the files in your library (no Spotify audio)");
+    spotifyButton.onClick = [this] { showSpotify(); };
+
+    for (auto* c : std::initializer_list<juce::Component*> { &titleLabel, &statusLabel, &settingsButton, &controllerButton, &spotifyButton,
+                                                             &waveA, &waveB, &deckA, &deckB, &mixer, &fxStrip, &browser })
         addAndMakeVisible (c);
 
     browser.onLoadRequest = [this] (const juce::File& file, int deckIndex) { loadIntoDeck (file, deckIndex); };
@@ -92,6 +108,14 @@ MainComponent::MainComponent (juce::PropertiesFile& s) : settings (s)
     stemManager.setModelFile (findModelFile());
     stemQuality = (stems::Quality) juce::jlimit (0, 2, settings.getIntValue (stemQualityKey, (int) stems::Quality::balanced));
     autoStems = settings.getBoolValue (autoStemsKey, true);
+
+    for (int d = 0; d < 2; ++d)
+    {
+        auto& comp = d == 0 ? deckA : deckB;
+        const juce::String key = "autoSync" + juce::String (d);
+        comp.setAutoSync (settings.getBoolValue (key, false));
+        comp.onAutoSyncChanged = [this, key] (bool on) { settings.setValue (key, on); };
+    }
     for (int d = 0; d < 2; ++d)
     {
         auto& deckComponent = d == 0 ? deckA : deckB;
@@ -121,6 +145,7 @@ MainComponent::~MainComponent()
     stopTimer();
     // Dialogs refer to objects owned by this component.
     delete controllerDialog.getComponent();
+    delete spotifyDialog.getComponent();
     delete audioDialog.getComponent();
     stemManager.cancelAll();
     analysis.cancel();
@@ -160,7 +185,16 @@ void MainComponent::openLibrary()
                                                .withMessage (library.getDatabase().getRecoveryNote()),
                                            nullptr);
 
-    createDailyBackup();
+    createDailyBackup();   // before anything is changed
+
+    // Once: clean pool / site clutter out of the titles and artists that are already in the library
+    // (new files are cleaned while they are read). Tags inside the music files are not touched.
+    if (settings.getIntValue ("libraryTidyVersion", 0) < 1)
+    {
+        library.tidyAll();
+        settings.setValue ("libraryTidyVersion", 1);
+        settings.saveIfNeeded();
+    }
 }
 
 void MainComponent::createDailyBackup()
@@ -454,23 +488,28 @@ void MainComponent::resized()
     auto top = area.removeFromTop (32);
     settingsButton.setBounds (top.removeFromRight (120).reduced (2));
     controllerButton.setBounds (top.removeFromRight (120).reduced (2));
+    spotifyButton.setBounds (top.removeFromRight (100).reduced (2));
+    preStemsButton.setBounds (top.removeFromRight (110).reduced (2));
     titleLabel.setBounds (top.removeFromLeft (200));
     statusLabel.setBounds (top.reduced (8, 0));
 
     area.removeFromTop (4);
-    const int waveH = juce::jlimit (60, 120, area.getHeight() / 9);
+    const int waveH = juce::jlimit (50, 100, area.getHeight() / 11);
     waveA.setBounds (area.removeFromTop (waveH));
     area.removeFromTop (3);
     waveB.setBounds (area.removeFromTop (waveH));
     area.removeFromTop (6);
 
-    auto decksRow = area.removeFromTop ((int) (area.getHeight() * 0.58f));
+    // Decks about half of what is left, then the effect strip; the library keeps the rest (at least a third).
+    auto decksRow = area.removeFromTop ((int) (area.getHeight() * 0.52f));
     const int mixerW = juce::jlimit (300, 380, decksRow.getWidth() / 4);
     const int deckW = (decksRow.getWidth() - mixerW) / 2;
     deckA.setBounds (decksRow.removeFromLeft (deckW));
     deckB.setBounds (decksRow.removeFromRight (deckW));
     mixer.setBounds (decksRow);
 
+    area.removeFromTop (4);
+    fxStrip.setBounds (area.removeFromTop (44));
     area.removeFromTop (4);
     browser.setBounds (area);
 }
@@ -646,11 +685,11 @@ void MainComponent::timerCallback()
     {
         const double latencyMs = (device->getOutputLatencyInSamples() + device->getCurrentBufferSizeSamples())
                                  * 1000.0 / device->getCurrentSampleRate();
-        statusLabel.setText (device->getTypeName() + " | " + device->getName()
-                                 + " | " + juce::String ((int) device->getCurrentSampleRate()) + " Hz"
-                                 + " | buffer " + juce::String (device->getCurrentBufferSizeSamples())
-                                 + " (~" + juce::String (latencyMs, 1) + " ms)"
-                                 + " | outputs " + juce::String (engine.getMixer().getNumOutputChannels())
+        // Short line; the device name and buffer size are in the tooltip.
+        statusLabel.setTooltip (device->getTypeName() + " | " + device->getName() + " | buffer " + juce::String (device->getCurrentBufferSizeSamples())
+                                + " samples | outputs " + juce::String (engine.getMixer().getNumOutputChannels()));
+        statusLabel.setText (juce::String (device->getCurrentSampleRate() / 1000.0, 1) + " kHz"
+                                 + " | " + juce::String (latencyMs, 0) + " ms"
                                  + " | CPU " + juce::String (juce::roundToInt (dm.getCpuUsage() * 100.0)) + "%"
                                  + " | dropouts " + juce::String (dm.getXRunCount())
                                  + (analysis.isBusy() ? " | analysing " + juce::String (analysis.getDone() + analysis.getFailed()) + "/" + juce::String (analysis.getQueued()) : juce::String())
@@ -662,6 +701,28 @@ void MainComponent::timerCallback()
     {
         statusLabel.setText ("No audio device - open AUDIO SETUP", juce::dontSendNotification);
     }
+}
+
+void MainComponent::showSpotify()
+{
+    if (spotifyDialog != nullptr)
+    {
+        spotifyDialog->toFront (true);
+        return;
+    }
+
+    auto content = std::make_unique<spotify::SpotifyComponent> (spotifyClient, library);
+    content->setSize (640, 560);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned (content.release());
+    options.dialogTitle = "Spotify";
+    options.dialogBackgroundColour = Colours::panel;
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.componentToCentreAround = this;
+    spotifyDialog = options.launchAsync();
 }
 
 void MainComponent::showControllerSettings()
@@ -779,6 +840,80 @@ void MainComponent::registerActions()
     add ("browser.press", "Browser", "Load selected track (first free deck)", Type::button, [this] (const ControlEvent& e) { if (e.pressed) browser.loadSelectedToDeck (-1); });
     add ("browser.load.deck1", "Browser", "Load selected track to deck 1", Type::button, [this] (const ControlEvent& e) { if (e.pressed) browser.loadSelectedToDeck (0); });
     add ("browser.load.deck2", "Browser", "Load selected track to deck 2", Type::button, [this] (const ControlEvent& e) { if (e.pressed) browser.loadSelectedToDeck (1); });
+
+    //==========================================================================
+    // Effects. Every deck has two slots (deckN.fxM.*); the "Beat FX" section of a controller (fx.*) works on
+    // the first slot of the decks chosen with fx.target.
+    auto cycleType = [] (fx::EffectSlot& slot, int delta)
+    {
+        slot.setType ((slot.getType() + delta + fx::numTypes) % fx::numTypes);
+    };
+
+    for (int d = 0; d < 2; ++d)
+        for (int s = 0; s < fx::EffectRack::numSlots; ++s)
+        {
+            auto* slot = &engine.getMixer().getEffects (d).slot (s);
+            const juce::String p = "deck" + juce::String (d + 1) + ".fx" + juce::String (s + 1) + ".";
+            const juce::String group = "Deck " + juce::String (d + 1) + " FX " + juce::String (s + 1);
+
+            add (p + "toggle", group, "Effect on / off", Type::button, [slot] (const ControlEvent& e)
+                 {
+                     if (! e.pressed)
+                         return;
+                     if (! slot->isOn() && slot->getType() == fx::none)
+                         slot->setType (fx::echo);
+                     slot->setOn (! slot->isOn());
+                 },
+                 [slot] { return slot->isOn(); });
+            add (p + "next", group, "Next effect", Type::button, [slot, cycleType] (const ControlEvent& e) { if (e.pressed) cycleType (*slot, 1); });
+            add (p + "prev", group, "Previous effect", Type::button, [slot, cycleType] (const ControlEvent& e) { if (e.pressed) cycleType (*slot, -1); });
+            add (p + "select", group, "Choose effect (endless knob)", Type::relative,
+                 [slot, cycleType] (const ControlEvent& e) { if (e.value != 0.0) cycleType (*slot, e.value > 0.0 ? 1 : -1); });
+            add (p + "depth", group, "Effect depth", Type::absolute, [slot] (const ControlEvent& e) { slot->setDepth ((float) e.value); });
+            add (p + "param", group, "Effect parameter", Type::absolute, [slot] (const ControlEvent& e) { slot->setParam ((float) e.value); });
+        }
+
+    auto forTargets = [this] (const std::function<void (fx::EffectSlot&)>& fn)
+    {
+        for (int d = 0; d < 2; ++d)
+            if (fxTarget == 2 || fxTarget == d)
+                fn (engine.getMixer().getEffects (d).slot (0));
+    };
+
+    add ("fx.onoff", "FX section", "Effect on / off (chosen decks)", Type::button, [this, forTargets] (const ControlEvent& e)
+         {
+             if (! e.pressed)
+                 return;
+             bool anyOn = false;
+             forTargets ([&anyOn] (fx::EffectSlot& s) { anyOn = anyOn || s.isOn(); });
+             forTargets ([anyOn] (fx::EffectSlot& s)
+                         {
+                             if (! anyOn && s.getType() == fx::none)
+                                 s.setType (fx::echo);
+                             s.setOn (! anyOn);
+                         });
+         },
+         [this, forTargets]
+         {
+             bool anyOn = false;
+             forTargets ([&anyOn] (fx::EffectSlot& s) { anyOn = anyOn || s.isOn(); });
+             return anyOn;
+         });
+    add ("fx.select", "FX section", "Choose effect (endless knob)", Type::relative, [forTargets, cycleType] (const ControlEvent& e)
+         { if (e.value != 0.0) forTargets ([&] (fx::EffectSlot& s) { cycleType (s, e.value > 0.0 ? 1 : -1); }); });
+    add ("fx.select.next", "FX section", "Next effect (button)", Type::button, [forTargets, cycleType] (const ControlEvent& e)
+         { if (e.pressed) forTargets ([&] (fx::EffectSlot& s) { cycleType (s, 1); }); });
+    add ("fx.depth", "FX section", "Effect depth (chosen decks)", Type::absolute, [forTargets] (const ControlEvent& e)
+         { forTargets ([&] (fx::EffectSlot& s) { s.setDepth ((float) e.value); }); });
+    add ("fx.param", "FX section", "Effect parameter (chosen decks)", Type::absolute, [forTargets] (const ControlEvent& e)
+         { forTargets ([&] (fx::EffectSlot& s) { s.setParam ((float) e.value); }); });
+    add ("fx.target", "FX section", "Choose decks: 1 / 2 / both", Type::button, [this] (const ControlEvent& e)
+         {
+             if (! e.pressed)
+                 return;
+             fxTarget = (fxTarget + 1) % 3;
+             statusLabel.setText (fxTarget == 2 ? "FX: both decks" : "FX: deck " + juce::String (fxTarget + 1), juce::dontSendNotification);
+         });
 }
 
 //==============================================================================

@@ -360,7 +360,9 @@ int runAnalysisStorageTests()
             check (manager.enqueuePending() == 1, "the new (too short) file is queued");
             waitFor ([&] { return ! manager.isBusy(); });
             check (manager.getFailed() == 1, "a file that cannot be analysed counts as failed");
-            check (manager.enqueuePending() == 0, "and is not retried automatically");
+            check (manager.enqueuePending() == 0, "and is not retried automatically within the same run");
+            AnalysisManager nextRun (lib, formats);
+            check (nextRun.enqueuePending() == 1, "but a failure from an earlier run is tried once more");
         }
     }
 

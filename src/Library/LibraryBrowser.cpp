@@ -1,6 +1,8 @@
 #include "LibraryBrowser.h"
 #include "Library/TrackMetadata.h"
 #include "UI/DJLookAndFeel.h"
+#include <algorithm>
+#include <map>
 
 namespace pathboard
 {
@@ -29,11 +31,11 @@ namespace
 {
     struct ColumnDef { TrackColumn column; int width; bool visible; };
     constexpr ColumnDef defaultColumns[] = {
-        { TrackColumn::title, 240, true },   { TrackColumn::artist, 170, true },  { TrackColumn::remix, 110, true },
-        { TrackColumn::album, 150, true },   { TrackColumn::genre, 100, true },   { TrackColumn::bpm, 62, true },
-        { TrackColumn::key, 48, true },      { TrackColumn::energy, 56, true },   { TrackColumn::length, 56, true },
+        { TrackColumn::title, 240, true },   { TrackColumn::artist, 170, true },  { TrackColumn::remix, 130, true },
+        { TrackColumn::bpm, 62, true },      { TrackColumn::key, 48, true },      { TrackColumn::genre, 120, true },
+        { TrackColumn::energy, 56, true },   { TrackColumn::length, 56, true },
         { TrackColumn::analysisQuality, 70, true }, { TrackColumn::rating, 90, true },
-        { TrackColumn::format, 56, false },  { TrackColumn::bitrate, 62, false }, { TrackColumn::year, 50, false },
+        { TrackColumn::album, 150, false },  { TrackColumn::format, 56, false },  { TrackColumn::bitrate, 62, false }, { TrackColumn::year, 50, false },
         { TrackColumn::playCount, 50, false }, { TrackColumn::lastPlayed, 110, false }, { TrackColumn::firstSeen, 110, false },
         { TrackColumn::path, 300, false },
     };
@@ -67,11 +69,12 @@ public:
         Node (LibraryBrowser& o, juce::String text, bool isHeader, ViewSelection s, juce::Colour c = Colours::text)
             : owner (o), label (std::move (text)), header (isHeader), selection (std::move (s)), colour (c) {}
 
-        bool mightContainSubItems() override { return header; }
+        bool mightContainSubItems() override { return header || hasChildren; }
         bool canBeSelected() const override { return ! header; }
         juce::String getUniqueName() const override
         {
-            return label + "|" + juce::String ((int) selection.view) + "|" + juce::String (selection.playlistId) + "|" + selection.folder;
+            return label + "|" + juce::String ((int) selection.view) + "|" + juce::String (selection.playlistId) + "|" + selection.folder
+                   + "|" + juce::String (selection.minBpm);
         }
 
         void paintItem (juce::Graphics& g, int width, int height) override
@@ -150,41 +153,108 @@ public:
         bool header;
         ViewSelection selection;
         juce::Colour colour;
+        bool hasChildren = false;   // a folder with subfolders: selectable and expandable
     };
 
     explicit Sidebar (LibraryBrowser& o) : owner (o) {}
+
+    // Folder tree from the tracks' paths: only folders that contain music, with the number of tracks.
+    struct Dir
+    {
+        std::map<juce::String, Dir> kids;
+        int count = 0;
+    };
+
+    void addFolderNodes (Node* parent, const Dir& dir, const juce::String& fullPath)
+    {
+        for (const auto& [name, kid] : dir.kids)
+        {
+            const auto path = fullPath + juce::File::getSeparatorString() + name;
+            ViewSelection s;
+            s.view = View::folder;
+            s.folder = path;
+            auto* n = new Node (owner, name + "  (" + juce::String (kid.count) + ")", false, s);
+            n->hasChildren = ! kid.kids.empty();
+            parent->addSubItem (n);
+            n->setOpenness (juce::TreeViewItem::Openness::opennessClosed);
+            addFolderNodes (n, kid, path);
+        }
+    }
 
     Node* build (const juce::String& signatureFolders)
     {
         juce::ignoreUnused (signatureFolders);
         root = std::make_unique<Node> (owner, "root", true, ViewSelection());
 
-        auto addSection = [this] (const juce::String& title) -> Node*
+        auto addSection = [this] (const juce::String& title, bool open = true) -> Node*
         {
             auto* n = new Node (owner, title, true, ViewSelection());
-            n->setOpenness (juce::TreeViewItem::Openness::opennessOpen);
+            n->setOpenness (open ? juce::TreeViewItem::Openness::opennessOpen : juce::TreeViewItem::Openness::opennessClosed);
             root->addSubItem (n);
             return n;
         };
 
-        auto* librarySection = addSection ("Library");
-        struct Entry { const char* name; View view; };
-        for (auto e : { Entry { "All songs", View::allSongs }, Entry { "Favorites (4+ stars)", View::favorites },
-                        Entry { "Recently played", View::recentlyPlayed }, Entry { "History", View::history },
-                        Entry { "Missing files", View::missing }, Entry { "Duplicates", View::duplicates } })
+        auto addView = [this] (Node* section, const juce::String& name, View view, double minBpm = 0.0, double maxBpm = 0.0)
         {
             ViewSelection s;
-            s.view = e.view;
-            librarySection->addSubItem (new Node (owner, e.name, false, s));
-        }
+            s.view = view;
+            s.minBpm = minBpm;
+            s.maxBpm = maxBpm;
+            section->addSubItem (new Node (owner, name, false, s));
+        };
+
+        // Structure: what to play, by tempo, what still needs work, where the files are, own playlists.
+        auto* librarySection = addSection ("Library");
+        addView (librarySection, "All songs", View::allSongs);
+        addView (librarySection, "Favorites (4+ stars)", View::favorites);
+        addView (librarySection, "Recently added", View::recentlyAdded);
+        addView (librarySection, "Recently played", View::recentlyPlayed);
+        addView (librarySection, "History", View::history);
+
+        auto* tempoSection = addSection ("By tempo", false);   // folded: folders and playlists stay in view
+        addView (tempoSection, "Under 100 BPM", View::tempo, 0.01, 99.99);
+        addView (tempoSection, "100 - 115 BPM", View::tempo, 100.0, 114.99);
+        addView (tempoSection, "115 - 125 BPM", View::tempo, 115.0, 124.99);
+        addView (tempoSection, "125 - 135 BPM", View::tempo, 125.0, 134.99);
+        addView (tempoSection, "Over 135 BPM", View::tempo, 135.0, 400.0);
+
+        auto* tidySection = addSection ("To do", false);
+        addView (tidySection, "Not analysed", View::notAnalysed);
+        addView (tidySection, "No genre", View::noGenre);
+        addView (tidySection, "Missing files", View::missing);
+        addView (tidySection, "Duplicates", View::duplicates);
 
         auto* folders = addSection ("Music folders");
         for (const auto& f : owner.library.getMusicFolders())
         {
+            const auto root = f.getFullPathName().trimCharactersAtEnd ("\\/");
+            const auto prefix = root + juce::File::getSeparatorString();
+
+            Dir tree;
+            int total = 0;
+            for (const auto& t : owner.library.getTracks())
+            {
+                if (t.missing || ! t.path.startsWithIgnoreCase (prefix))
+                    continue;
+                ++total;
+                auto* dir = &tree;
+                const auto relative = t.path.substring (prefix.length());
+                auto parts = juce::StringArray::fromTokens (relative, "\\/", "");
+                for (int i = 0; i < parts.size() - 1 && i < 4; ++i)   // folders only (not the file), four levels deep
+                {
+                    dir = &dir->kids[parts[i]];
+                    ++dir->count;
+                }
+            }
+
             ViewSelection s;
             s.view = View::folder;
-            s.folder = f.getFullPathName();
-            folders->addSubItem (new Node (owner, f.getFileName().isEmpty() ? f.getFullPathName() : f.getFileName(), false, s));
+            s.folder = root;
+            auto* n = new Node (owner, (f.getFileName().isEmpty() ? f.getFullPathName() : f.getFileName()) + "  (" + juce::String (total) + ")", false, s);
+            n->hasChildren = ! tree.kids.empty();
+            folders->addSubItem (n);
+            n->setOpenness (juce::TreeViewItem::Openness::opennessClosed);
+            addFolderNodes (n, tree, root);
         }
 
         auto* playlists = addSection ("Playlists");
@@ -204,9 +274,10 @@ public:
         for (int i = 0; i < from->getNumSubItems(); ++i)
         {
             auto* n = static_cast<Node*> (from->getSubItem (i));
-            if (! n->header && n->selection.view == s.view && n->selection.playlistId == s.playlistId && n->selection.folder == s.folder)
+            if (! n->header && n->selection.view == s.view && n->selection.playlistId == s.playlistId && n->selection.folder == s.folder
+                && n->selection.minBpm == s.minBpm)
                 return n;
-            if (n->header)
+            if (n->header || n->hasChildren)
                 if (auto* r = find (s, n))
                     return r;
         }
@@ -479,6 +550,7 @@ void LibraryBrowser::rebuildSidebarIfNeeded()
         signature << f.getFullPathName() << "\n";
     for (const auto& p : library.getPlaylists())
         signature << p.id << ":" << p.name << ":" << (int) p.kind << "\n";
+    signature << library.getTracks().size() << "\n";   // the folder tree shows what is in the library
 
     if (signature == sidebarSignature)
         return;
@@ -543,6 +615,33 @@ void LibraryBrowser::refresh()
             viewSpec.folderPrefix = currentView.folder;
             rows = library.query (viewSpec);
             break;
+        case View::recentlyAdded:
+        {
+            viewSpec.sortColumn = TrackColumn::firstSeen;
+            viewSpec.ascending = false;
+            rows = library.query (viewSpec);
+            if (rows.size() > 200)
+                rows.resize (200);
+            break;
+        }
+        case View::tempo:
+            viewSpec.minBpm = currentView.minBpm;
+            viewSpec.maxBpm = currentView.maxBpm;
+            rows = library.query (viewSpec);
+            break;
+        case View::notAnalysed:
+        case View::noGenre:
+        {
+            rows = library.query (viewSpec);
+            const bool analysisView = currentView.view == View::notAnalysed;
+            const auto& all = library.getTracks();
+            rows.erase (std::remove_if (rows.begin(), rows.end(), [&] (int index)
+                        {
+                            const auto& t = all[(size_t) index];
+                            return analysisView ? t.analysisVersion > 0 : t.displayGenre().isNotEmpty();
+                        }), rows.end());
+            break;
+        }
         case View::playlist:
         {
             const auto playlist = findPlaylist (currentView.playlistId);

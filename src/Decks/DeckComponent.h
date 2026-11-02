@@ -41,6 +41,8 @@ public:
 
     // Called when the user changes BPM or beat grid by hand (tap, grid shift, grid set). The owner stores it.
     std::function<void (double bpm, double firstBeat, int downbeat)> onGridEdited;
+    std::function<void (bool enabled)> onAutoSyncChanged;
+    void setAutoSync (bool enabled) { autoSyncButton.setToggleState (enabled, juce::dontSendNotification); autoSyncPending = enabled && ! deck.isSynced(); }
 
     // Stems. The four toggles behave like VirtualDJ's stem buttons: lit = audible.
     //   Vocal = vocals, Instrumental = drums + bass + other, Bass and Drums switch those parts inside the instrumental.
@@ -91,7 +93,8 @@ private:
     juce::Slider pitchSlider { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
     juce::TextButton pitchRangeButton, pitchResetButton { "0" };
 
-    juce::TextButton cueButton { "CUE" }, playButton { "PLAY" }, syncButton { "SYNC" };
+    juce::TextButton cueButton { "CUE" }, playButton { "PLAY" }, syncButton { "SYNC" }, autoSyncButton { "AUTO" };
+    bool autoSyncPending = false;
     juce::TextButton tapButton { "TAP" }, loadButton { "LOAD" };
     juce::TextButton rewindButton { "<<" }, forwardButton { ">>" };
     std::array<juce::TextButton, 4> stemButtons;

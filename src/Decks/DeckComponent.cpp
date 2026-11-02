@@ -63,7 +63,11 @@ DeckComponent::DeckComponent (DeckEngine& d, DeckEngine& other, int index)
     pitchSlider.setValue (0.0, juce::dontSendNotification);
     pitchSlider.setDoubleClickReturnValue (true, 0.0);
     pitchSlider.setColour (juce::Slider::rotarySliderFillColourId, accent);
-    pitchSlider.onValueChange = [this] { deck.setPitch (pitchSlider.getValue() / 100.0); };
+    pitchSlider.onValueChange = [this]
+    {
+        deck.clearSync();   // moving the pitch by hand ends the beat sync
+        deck.setPitch (pitchSlider.getValue() / 100.0);
+    };
     addAndMakeVisible (pitchSlider);
 
     pitchRangeButton.setButtonText ("8%");
@@ -90,6 +94,16 @@ DeckComponent::DeckComponent (DeckEngine& d, DeckEngine& other, int index)
     playButton.onClick = [this] { deck.togglePlay(); };
     syncButton.setTooltip ("Match this deck's tempo to the other deck (needs BPM on both decks).");
     syncButton.onClick = [this] { syncToOtherDeck(); };
+
+    autoSyncButton.setClickingTogglesState (true);
+    autoSyncButton.setTooltip ("Auto sync: a track loaded onto this deck is synced to the other deck by itself and stays in sync "
+                               "(tempo and beats) until you move the pitch fader.");
+    autoSyncButton.onClick = [this]
+    {
+        autoSyncPending = autoSyncButton.getToggleState() && ! deck.isSynced();
+        if (onAutoSyncChanged)
+            onAutoSyncChanged (autoSyncButton.getToggleState());
+    };
     tapButton.setTooltip ("Tap along with the beat to set the BPM.");
     tapButton.onClick = [this] { tapTempo(); };
     loadButton.onClick = [this] { openFileChooser(); };
@@ -108,7 +122,7 @@ DeckComponent::DeckComponent (DeckEngine& d, DeckEngine& other, int index)
     gridRightButton.onClick = [this] { shiftGrid (0.010); };
     gridSetButton.onClick = [this] { setGridHere(); };
 
-    for (auto* b : { &cueButton, &playButton, &syncButton, &tapButton, &loadButton, &rewindButton, &forwardButton,
+    for (auto* b : { &cueButton, &playButton, &syncButton, &autoSyncButton, &tapButton, &loadButton, &rewindButton, &forwardButton,
                      &gridLeftButton, &gridSetButton, &gridRightButton })
         addAndMakeVisible (b);
 
@@ -152,7 +166,7 @@ DeckComponent::DeckComponent (DeckEngine& d, DeckEngine& other, int index)
     {
         auto& b = loopButtons[i];
         const double beats = loopBeatOptions[i];
-        b.setButtonText (beats < 1.0 ? "1/2" : juce::String ((int) beats));
+        b.setButtonText (beats < 1.0 ? juce::String (juce::CharPointer_UTF8 ("\xc2\xbd")) : juce::String ((int) beats));   // 1/2 as one character
         b.setTooltip ("Loop " + b.getButtonText() + " beat(s). Uses the deck BPM, or 120 BPM if none is set.");
         b.onClick = [this, beats] { triggerLoop (beats); };
         addAndMakeVisible (b);
@@ -194,44 +208,67 @@ void DeckComponent::resized()
     remainLabel.setBounds (subHeader);
 
     area.removeFromTop (4);
-    overview.setBounds (area.removeFromTop (44));
-    area.removeFromTop (8);
+    overview.setBounds (area.removeFromTop (40));
+    area.removeFromTop (6);
 
-    auto loopRow = area.removeFromBottom (30);
-    area.removeFromBottom (4);
-    auto cueRow = area.removeFromBottom (32);
-    area.removeFromBottom (4);
-    auto stemRow = area.removeFromBottom (30);
-    area.removeFromBottom (6);
-    auto transportRow = area.removeFromBottom (44);
+    // Two columns: the big platter with the pitch fader on one side, all buttons stacked on the other.
+    // The buttons share the height, so the layout follows the window instead of squeezing the platter.
+    const int rightWidth = juce::jlimit (250, 440, (int) (area.getWidth() * 0.5f));
+    auto buttons = deckIndex == 0 ? area.removeFromRight (rightWidth) : area.removeFromLeft (rightWidth);
+    (deckIndex == 0 ? area.removeFromRight (8) : area.removeFromLeft (8));
 
-    // Stem row: four toggles, quality, status/progress
-    for (auto& b : stemButtons)
-        b.setBounds (stemRow.removeFromLeft (76).reduced (2, 0));
-    stemQualityButton.setBounds (stemRow.removeFromLeft (92).reduced (2, 0));
-    stemStatusButton.setBounds (stemRow.reduced (2, 0));
-    area.removeFromBottom (8);
+    // cue/play, sync row, grid row, hot cues, loops, stems, stem status
+    const float weights[] = { 1.5f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f, 0.8f };
+    constexpr int numRows = 7;
+    float totalWeight = 0.0f;
+    for (float w : weights)
+        totalWeight += w;
+    const int gap = 4;
+    const float perWeight = (float) (buttons.getHeight() - gap * (numRows - 1)) / totalWeight;
+    juce::Rectangle<int> rows[numRows];
+    for (int i = 0; i < numRows; ++i)
+    {
+        rows[i] = buttons.removeFromTop (juce::jmin (64, juce::roundToInt (weights[i] * perWeight)));
+        buttons.removeFromTop (gap);
+    }
+    auto& transportRow = rows[0];
+    auto& syncRow = rows[1];
+    auto& gridRow = rows[2];
+    auto& cueRow = rows[3];
+    auto& loopRow = rows[4];
+    auto& stemRow = rows[5];
+    auto& stemStatusRow = rows[6];
 
-    // Loop row
-    const int loopW = loopRow.getWidth() / ((int) loopButtons.size() + 1);
-    for (auto& b : loopButtons)
-        b.setBounds (loopRow.removeFromLeft (loopW).reduced (2, 0));
-    loopExitButton.setBounds (loopRow.reduced (2, 0));
+    gridLeftButton.setBounds (gridRow.removeFromLeft (gridRow.getWidth() / 3).reduced (2, 0));
+    gridRightButton.setBounds (gridRow.removeFromRight (gridRow.getWidth() / 2).reduced (2, 0));
+    gridSetButton.setBounds (gridRow.reduced (2, 0));
 
-    // Hot cue row
+    cueButton.setBounds (transportRow.removeFromLeft (transportRow.getWidth() / 2).reduced (2, 0));
+    playButton.setBounds (transportRow.reduced (2, 0));
+
+    const int sw = syncRow.getWidth() / 4;
+    syncButton.setBounds (syncRow.removeFromLeft (sw).reduced (2, 0));
+    autoSyncButton.setBounds (syncRow.removeFromLeft (sw).reduced (2, 0));
+    tapButton.setBounds (syncRow.removeFromLeft (sw).reduced (2, 0));
+    loadButton.setBounds (syncRow.reduced (2, 0));
+
     const int cueW = cueRow.getWidth() / DeckEngine::numHotCues;
     for (auto& b : hotCueButtons)
         b.setBounds (cueRow.removeFromLeft (cueW).reduced (2, 0));
 
-    // Transport row
-    const int tw = transportRow.getWidth() / 7;
-    cueButton.setBounds (transportRow.removeFromLeft (tw * 2).reduced (2, 0));
-    playButton.setBounds (transportRow.removeFromLeft (tw * 2).reduced (2, 0));
-    syncButton.setBounds (transportRow.removeFromLeft (tw).reduced (2, 0));
-    tapButton.setBounds (transportRow.removeFromLeft (tw).reduced (2, 0));
-    loadButton.setBounds (transportRow.reduced (2, 0));
+    // Six loop lengths and EXIT (a little wider for its four letters).
+    const int loopW = (int) (loopRow.getWidth() / ((float) loopButtons.size() + 1.5f));
+    for (auto& b : loopButtons)
+        b.setBounds (loopRow.removeFromLeft (loopW).reduced (1, 0));
+    loopExitButton.setBounds (loopRow.reduced (1, 0));
 
-    // Middle: jog + pitch fader
+    const int stemW = stemRow.getWidth() / (int) stemButtons.size();
+    for (auto& b : stemButtons)
+        b.setBounds (stemRow.removeFromLeft (stemW).reduced (2, 0));
+    stemQualityButton.setBounds (stemStatusRow.removeFromLeft (juce::jmin (100, stemStatusRow.getWidth() / 3)).reduced (2, 0));
+    stemStatusButton.setBounds (stemStatusRow.reduced (2, 0));
+
+    // Platter side: pitch fader on the outer edge towards the mixer, search / grid buttons under the platter.
     auto pitchArea = deckIndex == 0 ? area.removeFromRight (56) : area.removeFromLeft (56);
     pitchRangeButton.setBounds (pitchArea.removeFromTop (22).reduced (2, 0));
     pitchArea.removeFromTop (2);
@@ -240,14 +277,12 @@ void DeckComponent::resized()
     pitchSlider.setBounds (pitchArea);
 
     auto searchRow = area.removeFromBottom (26);
-    rewindButton.setBounds (searchRow.removeFromLeft (50));
-    forwardButton.setBounds (searchRow.removeFromRight (50));
-    auto gridRow = searchRow.withSizeKeepingCentre (juce::jmin (searchRow.getWidth(), 240), searchRow.getHeight());
-    gridLeftButton.setBounds (gridRow.removeFromLeft (gridRow.getWidth() / 3).reduced (2, 0));
-    gridRightButton.setBounds (gridRow.removeFromRight (gridRow.getWidth() / 2).reduced (2, 0));
-    gridSetButton.setBounds (gridRow.reduced (2, 0));
+    rewindButton.setBounds (searchRow.removeFromLeft (searchRow.getWidth() / 2).reduced (2, 0));
+    forwardButton.setBounds (searchRow.reduced (2, 0));
 
-    jogWheel.setBounds (area.reduced (4));
+    // The platter is round: the largest square in the space that is left.
+    const int side = juce::jmin (area.getWidth(), area.getHeight()) - 4;
+    jogWheel.setBounds (area.withSizeKeepingCentre (juce::jmax (40, side), juce::jmax (40, side)));
 }
 
 //==============================================================================
@@ -351,18 +386,8 @@ void DeckComponent::setGridHere()
 
 bool DeckComponent::loadTrack (const juce::File& file)
 {
-    if (deck.isPlaying())
-    {
-        // Protect the live mix: never replace a playing track silently.
-        juce::NativeMessageBox::showAsync (juce::MessageBoxOptions()
-                                               .withIconType (juce::MessageBoxIconType::WarningIcon)
-                                               .withTitle ("Deck " + juce::String (deckIndex + 1) + " is playing")
-                                               .withMessage ("Stop the deck before loading a new track."),
-                                           nullptr);
-        return false;
-    }
-
     keyLabel.setText ("KEY --", juce::dontSendNotification);
+    autoSyncPending = autoSyncButton.getToggleState();   // done in the timer once both tempi are known
     activeLoopBeats = 0.0;
     tapTimes.clear();
     stemOn.fill (true);
@@ -417,7 +442,15 @@ void DeckComponent::syncToOtherDeck()
 
     while (std::abs (plan.percent) > pitchRangePercent && pitchRangePercent < maxSyncPercent)
         cyclePitchRange();
-    setPitchPercent (plan.percent);
+
+    // Exact pitch (the fader only shows it, rounded), then the beats are lined up and the deck keeps following
+    // the other deck: tempo and phase, so the beat lines stay together instead of drifting apart.
+    pitchSlider.setValue (juce::jlimit (-pitchRangePercent, pitchRangePercent, plan.percent), juce::dontSendNotification);
+    deck.setPitch (plan.percent / 100.0);
+
+    deck.setSyncMaster (&otherDeck, plan.targetFactor);
+    if (deck.isPlaying())
+        deck.alignToMaster();   // a stopped deck is aligned when it starts
 
     syncButton.setTooltip (plan.targetFactor == 1.0 ? juce::String ("Matched to the other deck.")
                                                     : "Matched in " + juce::String (plan.targetFactor == 0.5 ? "half" : "double") + "-time to the other deck.");
@@ -556,10 +589,11 @@ void DeckComponent::timerCallback()
     // Big number: what is audible (original tempo with the pitch applied). Small line: the track's own tempo.
     const double playbackBpm = deck.getPlaybackBpm();
     const double originalBpm = deck.getOriginalBpm();
-    const bool pitched = originalBpm > 0.0 && std::abs (deck.getPitch()) > 0.00005;
+    const double shownPitch = deck.getEffectivePitch();   // follows the other deck while synced
+    const bool pitched = originalBpm > 0.0 && std::abs (shownPitch) > 0.00005;
     bpmLabel.setText (playbackBpm > 0.0 ? juce::String (playbackBpm, 1) : "--.-", juce::dontSendNotification);
     origBpmLabel.setText (originalBpm > 0.0 ? "ORIG " + juce::String (originalBpm, 2)
-                                                  + (pitched ? "   " + juce::String (deck.getPitch() * 100.0, 2).replace ("-", juce::String::charToString (0x2212)) + " %" : juce::String())
+                                                  + (pitched ? "   " + juce::String (shownPitch * 100.0, 2).replace ("-", juce::String::charToString (0x2212)) + " %" : juce::String())
                                             : juce::String(),
                           juce::dontSendNotification);
     origBpmLabel.setColour (juce::Label::textColourId, pitched ? Colours::cue : Colours::textDim);
@@ -569,7 +603,11 @@ void DeckComponent::timerCallback()
         syncButton.setButtonText ("SYNC");
     }
 
-    const double pitchPct = deck.getPitch() * 100.0;
+    const double pitchPct = shownPitch * 100.0;
+    syncButton.setToggleState (deck.isSynced(), juce::dontSendNotification);
+    if (deck.isSynced() && std::abs (pitchSlider.getValue() - pitchPct) > 0.005
+        && std::abs (pitchPct) <= pitchRangePercent)
+        pitchSlider.setValue (pitchPct, juce::dontSendNotification);
     pitchLabel.setText ((pitchPct >= 0 ? "+" : "") + juce::String (pitchPct, 2) + "%", juce::dontSendNotification);
 
     playButton.setToggleState (deck.isPlaying(), juce::dontSendNotification);
@@ -602,6 +640,20 @@ void DeckComponent::timerCallback()
     }
 
     syncButton.setEnabled (deck.getNativeBpm() > 0.0 && otherDeck.getNativeBpm() > 0.0);
+
+    // Auto sync: as soon as this deck has a tempo and the other deck has one, line up with it - once per loaded track.
+    if (autoSyncPending && ! deck.isLoading())
+    {
+        if (! deck.hasTrackLoaded() || deck.isSynced())
+        {
+            autoSyncPending = false;
+        }
+        else if (deck.getNativeBpm() > 0.0 && otherDeck.getNativeBpm() > 0.0)
+        {
+            autoSyncPending = false;
+            syncToOtherDeck();
+        }
+    }
 }
 
 } // namespace pathboard

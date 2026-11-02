@@ -131,7 +131,7 @@ void DeckEngine::renderPlayback (juce::AudioBuffer<float>& out, int startSample,
     const bool isScratching = scratching.load();
     const bool isPlayingNow = playing.load();
     const double targetRate = isScratching ? scratchRate.load()
-                            : (isPlayingNow ? 1.0 + pitch.load() + pitchBend.load() : 0.0);
+                            : (isPlayingNow ? (syncRateNow > 0.0 ? syncRateNow : 1.0 + pitch.load() + pitchBend.load()) : 0.0);
 
     const bool looping = loopActive.load();
     const double loopStart = loopStartSamples.load();
@@ -226,12 +226,89 @@ void DeckEngine::renderPlayback (juce::AudioBuffer<float>& out, int startSample,
     positionSamples = playhead;
 }
 
+// Audio thread. The master's position is taken as it was at the start of this callback, whichever deck runs
+// first (a deck that already ran has advanced by one block, which would show up as a constant phase offset).
+void DeckEngine::updateSync (unsigned serial)
+{
+    syncRateNow = 0.0;
+    auto* master = syncMaster.load();
+    const double ownBpm = nativeBpm.load();
+    const double masterBpm = master != nullptr ? master->getEffectiveBpm() : 0.0;
+
+    if (master == nullptr || ownBpm <= 0.0 || masterBpm <= 0.0 || scratching.load())
+    {
+        syncBaseRate = 0.0;
+        syncTrim = 0.0;
+        syncPhaseError = 0.0;
+        return;
+    }
+
+    const double factor = syncFactor.load();
+    const double base = factor * masterBpm / ownBpm;
+    syncBaseRate = base;
+    pitch = juce::jlimit (-0.5, 0.5, base - 1.0);   // if the sync ends, the deck keeps this tempo (no jump)
+
+    const double bend = pitchBend.load();
+    double targetTrim = 0.0;
+    double error = 0.0;
+    if (playing.load() && master->playing.load() && master->nativeBpm.load() > 0.0 && ! master->scratching.load())
+    {
+        const double masterPos = master->callbackSerial.load() > serial ? master->callbackStartPos.load() : master->positionSamples.load();
+        const double masterBeats = (masterPos / master->trackSampleRate.load() - master->gridFirstBeat.load()) * master->nativeBpm.load() / 60.0;
+        auto ownBeatsNow = [&] { return (playhead / track->sampleRate - gridFirstBeat.load()) * ownBpm / 60.0; };
+
+        // Requested by SYNC / PLAY: jump to the nearest master beat, to the sample, right here where both
+        // positions are known exactly (the phase loop below then only has to hold it).
+        if (alignRequested.exchange (false))
+        {
+            double jump = ownBeatsNow() - factor * masterBeats;
+            jump -= std::round (jump);
+            playhead = juce::jlimit (0.0, (double) track->audio.getNumSamples() - 1.0, playhead - jump * 60.0 / ownBpm * track->sampleRate);
+            callbackStartPos = playhead;
+        }
+
+        const double raw = ownBeatsNow() - factor * masterBeats;
+        if (std::abs (bend) > 1.0e-9)
+        {
+            // The player nudges to line the beats up by ear: that position becomes the new target, the sync stays.
+            syncOffset = raw - std::round (raw);
+        }
+        else
+        {
+            error = raw - syncOffset.load();
+            error -= std::round (error);                            // nearest beat, -0.5 .. 0.5
+            if (std::abs (error) > 0.004)                           // ~2 ms: close enough, no constant hunting
+                targetTrim = juce::jlimit (-0.01, 0.01, -0.12 * error);   // gentle: at most 1 % speed change
+        }
+    }
+    else if (playing.load())
+    {
+        alignRequested = false;   // the master is not playing: nothing to align to, and no late jump when it starts
+    }
+    syncPhaseError = error;
+    syncTrim += (targetTrim - syncTrim) * 0.2;             // no jumps in speed
+    syncRateNow = base * (1.0 + syncTrim) * (1.0 + bend);
+}
+
+// Message thread: asks the audio thread to move this deck to the nearest beat of the master (at most half a
+// beat) as soon as both decks play, and to keep that phase. Used when SYNC is pressed and when a synced deck starts.
+void DeckEngine::alignToMaster()
+{
+    if (syncMaster.load() == nullptr || ! hasTrackLoaded())
+        return;
+    syncOffset = 0.0;
+    alignRequested = true;
+}
+
 void DeckEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
 {
+    const auto serial = callbackSerial.load();
     const juce::ScopedTryLock sl (trackLock);
 
     if (! sl.isLocked() || track == nullptr || ! dspPrepared.load())
     {
+        syncRateNow = 0.0;
+        callbackSerial = serial + 1;
         info.clearActiveBufferRegion();
         return;
     }
@@ -239,6 +316,10 @@ void DeckEngine::getNextAudioBlock (const juce::AudioSourceChannelInfo& info)
     const double seek = pendingSeekSamples.exchange (-1.0);
     if (seek >= 0.0)
         playhead = seek;
+
+    callbackStartPos = playhead;
+    updateSync (serial);
+    callbackSerial = serial + 1;
 
     renderPlayback (*info.buffer, info.startSample, info.numSamples);
 
@@ -274,6 +355,7 @@ bool DeckEngine::loadFile (const juce::File& file)
 
     const int generation = ++loadGeneration;
 
+    clearSync();
     playing = false;
     scratching = false;
     loopActive = false;
@@ -413,7 +495,11 @@ juce::String DeckEngine::getLastError() const
 void DeckEngine::play()
 {
     if (hasTrackLoaded() && ! loading.load())
+    {
+        if (! playing.load() && isSynced())
+            alignToMaster();   // start on the other deck's beat
         playing = true;
+    }
 }
 
 void DeckEngine::pause()
@@ -489,6 +575,7 @@ double DeckEngine::getLengthSeconds() const
 //==============================================================================
 void DeckEngine::beginScratch()
 {
+    clearSync();
     cuePreviewing = false;
     scratchRate = 0.0;
     scratching = true;
@@ -513,6 +600,33 @@ void DeckEngine::setPitch (double normalisedPercent)
 void DeckEngine::setPitchBend (double amount)
 {
     pitchBend = juce::jlimit (-0.5, 0.5, amount);
+}
+
+void DeckEngine::setSyncMaster (DeckEngine* master, double factor)
+{
+    if (master == nullptr || master == this)
+    {
+        clearSync();
+        return;
+    }
+    if (master->syncMaster.load() == this)
+        master->clearSync();   // two decks following each other would chase one another
+    syncFactor = factor;
+    syncOffset = 0.0;
+    syncMaster = master;
+}
+
+void DeckEngine::clearSync()
+{
+    syncMaster = nullptr;
+}
+
+double DeckEngine::getEffectivePitch() const
+{
+    const double base = syncBaseRate.load();
+    if (syncMaster.load() != nullptr && base > 0.0)
+        return base - 1.0;
+    return pitch.load();
 }
 
 void DeckEngine::setStems (std::shared_ptr<const stems::StemSet> set)
@@ -616,9 +730,20 @@ void DeckEngine::setNativeBpm (double bpm)
     nativeBpm = juce::jlimit (0.0, 300.0, bpm);
 }
 
+double DeckEngine::getFxBeatPosition() const
+{
+    const double bpm = nativeBpm.load();
+    if (! playing.load() || bpm <= 0.0 || ! hasTrackLoaded())
+        return -1.0;
+    double beats = std::fmod ((callbackStartPos.load() / trackSampleRate.load() - gridFirstBeat.load()) * bpm / 60.0, 4096.0);
+    if (beats < 0.0)
+        beats += 4096.0;
+    return beats;
+}
+
 double DeckEngine::getEffectiveBpm() const
 {
-    return nativeBpm.load() * (1.0 + pitch.load());
+    return nativeBpm.load() * (1.0 + getEffectivePitch());
 }
 
 } // namespace pathboard

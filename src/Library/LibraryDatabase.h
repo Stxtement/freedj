@@ -34,6 +34,8 @@ public:
     bool upsertTracks (std::vector<TrackRecord>& tracks);
     bool updateTrackInfo (const TrackRecord& track);   // user-editable fields only
     bool setTrackRating (juce::int64 id, int rating);
+    // Writes tidied title / artist / remix and the key / BPM taken from them (manual values stay) in one transaction.
+    bool updateTidiedTexts (const std::vector<TrackRecord>& tracks);
     bool loadTrack (juce::int64 id, TrackRecord& out);
 
     // Result of an automatic analysis. Manual corrections (TrackRecord::manualFlags) are never overwritten.

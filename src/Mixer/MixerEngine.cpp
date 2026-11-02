@@ -57,6 +57,8 @@ void MixerEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 
     for (auto* deck : decks)
         deck->prepareToPlay (blockSize, sampleRate);
+    for (auto& rack : racks)
+        rack.prepare (sampleRate, capacity);
 }
 
 void MixerEngine::audioDeviceStopped()
@@ -85,6 +87,11 @@ void MixerEngine::audioDeviceIOCallbackWithContext (const float* const*, int,
         auto& buffer = deckBuffers[d];
         buffer.setSize (2, numSamples, false, false, true);
         decks[d]->getNextAudioBlock (juce::AudioSourceChannelInfo (&buffer, 0, numSamples));
+
+        fx::BeatInfo beat;
+        beat.bpm = decks[d]->getEffectiveBpm();
+        beat.beatAtStart = decks[d]->getFxBeatPosition();
+        racks[d].process (buffer, numSamples, beat);
 
         const float fader = channelFaders[d].load();
         const float gain = fader * fader * xfGains[d]; // squared fader ~ perceptually linear

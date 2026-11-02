@@ -147,6 +147,12 @@ int main (int argc, char* argv[])
         runMatchTests();
         runGenreTests();
 
+        std::cout << std::endl << "=== Library texts ===" << std::endl;
+        runTidyTests();
+
+        std::cout << std::endl << "=== Effects ===" << std::endl;
+        runEffectTests();
+
         std::cout << std::endl << "=== Controller ===" << std::endl;
         runControllerTests();
 
