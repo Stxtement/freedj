@@ -225,6 +225,33 @@ int runAnalysisStorageTests()
         check (r.genre == "Techno" && r.bpm == 130.0, "re-reading the file does not overwrite a manual genre or BPM");
         check (r.analysisVersion == 0, "a changed file is queued for re-analysis");
 
+        // Only the timestamp changed (same size, same content fingerprint): the results stay.
+        db.saveAnalysis (a, u);   // fingerprint "abc"
+        std::vector<TrackRecord> touched { make ("a", 111.0) };
+        touched[0].path = batch[0].path;
+        touched[0].modified = 12000;
+        touched[0].fingerprint = "abc";
+        db.upsertTracks (touched);
+        db.loadTrack (a, r);
+        check (r.analysisVersion == 1 && r.modified == 12000, "a changed timestamp with the same fingerprint keeps the analysis");
+        touched[0].modified = 13000;
+        touched[0].fingerprint = "different";
+        db.upsertTracks (touched);
+        db.loadTrack (a, r);
+        check (r.analysisVersion == 0, "a different fingerprint invalidates the analysis");
+
+        // Results survive closing and reopening the database.
+        db.saveAnalysis (a, u);
+        db.close();
+        LibraryDatabase reopened;
+        reopened.open (root.getChildFile ("manual/library.db"));
+        TrackRecord back;
+        reopened.loadTrack (a, back);
+        check (back.analysisVersion == 1 && back.fingerprint == "abc" && back.key == "3B" && back.isManual (TrackRecord::manualBpm),
+               "analysis and manual flags are still there after reopening");
+        reopened.close();
+        db.open (root.getChildFile ("manual/library.db"));
+
         db.setManualGrid (c, 124.0, 0.33, 5);
         db.loadTrack (c, r);
         check (r.bpm == 124.0 && r.firstBeat == 0.33 && r.downbeat == 1 && r.isManual (TrackRecord::manualGrid) && r.isManual (TrackRecord::manualBpm),

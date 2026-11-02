@@ -364,9 +364,9 @@ std::unordered_map<juce::String, LibraryDatabase::KnownFile> LibraryDatabase::lo
     if (db == nullptr)
         return result;
 
-    Statement s (db, "SELECT path,id,size,modified,missing FROM tracks");
+    Statement s (db, "SELECT path,id,size,modified,missing,fingerprint FROM tracks");
     while (s.ok() && s.step() == SQLITE_ROW)
-        result[s.text (0)] = { s.int64 (1), s.int64 (2), s.int64 (3), s.integer (4) != 0 };
+        result[s.text (0)] = { s.int64 (1), s.int64 (2), s.int64 (3), s.integer (4) != 0, s.text (5) };
     return result;
 }
 
@@ -383,9 +383,11 @@ bool LibraryDatabase::upsertTracks (std::vector<TrackRecord>& tracks)
         "VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,0) "
         "ON CONFLICT(path) DO UPDATE SET title=?2,artist=?3,remix=?4,album=?5,comment=?7,format=?9,year=?10,"
         "bitrate=?11,length=?13,missing=0,"
-        // A changed file invalidates its analysis; the new content has to be analysed again.
-        "analysis_version=CASE WHEN modified<>?15 OR size<>?14 THEN 0 ELSE analysis_version END,"
-        "genre_version=CASE WHEN modified<>?15 OR size<>?14 THEN 0 ELSE genre_version END,"
+        // A changed file invalidates its analysis; the new content has to be analysed again. Only the
+        // timestamp changing (cloud sync, copying) does not: the content fingerprint (?17, given by the
+        // scanner) still equals the stored one, so the results stay.
+        "analysis_version=CASE WHEN (modified<>?15 OR size<>?14) AND NOT (fingerprint<>'' AND fingerprint=?17) THEN 0 ELSE analysis_version END,"
+        "genre_version=CASE WHEN (modified<>?15 OR size<>?14) AND NOT (fingerprint<>'' AND fingerprint=?17) THEN 0 ELSE genre_version END,"
         "size=?14,modified=?15,"
         // Hand-corrected values are never replaced by what the file's tags say.
         "genre=CASE WHEN (manual_flags&8)<>0 THEN genre ELSE ?6 END,"
@@ -408,7 +410,7 @@ bool LibraryDatabase::upsertTracks (std::vector<TrackRecord>& tracks)
         s.bind (5, t.album);     s.bind (6, t.genre);   s.bind (7, t.comment); s.bind (8, t.key);
         s.bind (9, t.format);    s.bind (10, t.year);   s.bind (11, t.bitrate); s.bind (12, t.bpm);
         s.bind (13, t.lengthSeconds); s.bind (14, t.fileSize); s.bind (15, t.modified);
-        s.bind (16, t.firstSeen);
+        s.bind (16, t.firstSeen);  s.bind (17, t.fingerprint);
 
         if (s.step() != SQLITE_ROW)
         {

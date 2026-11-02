@@ -37,12 +37,28 @@ std::vector<float> resampleSinc (const std::vector<float>& input, double inputRa
 bool decodeMono16k (const juce::File& file, juce::AudioFormatManager& formats, std::vector<float>& out,
                     juce::String& error, const std::atomic<bool>* cancel = nullptr);
 
-struct StyleProbability
+// The model: Discogs-EffNet (Essentia, Music Technology Group, UPF), licence CC BY-NC-SA 4.0 (non-commercial).
+struct ModelInfo
 {
-    int index = 0;
-    juce::String label;      // "Electronic---Tech House"
-    float probability = 0.0f;
+    static constexpr const char* fileName = "discogs-effnet-bsdynamic-1.onnx";
+    static constexpr const char* sha256 = "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c";   // pinned from the official file
+    static constexpr juce::int64 sizeBytes = 18027718;
+    static constexpr const char* downloadUrl = "https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bsdynamic-1.onnx";
 };
+
+// Bump when the preprocessing or the interpretation changes; tracks with an older version are detected again.
+constexpr int detectionVersion = 1;
+
+struct Detection
+{
+    juce::String main, sub, category;   // "House", "Tech House", "Electronic"
+    double confidence = 0.0;            // probability of the top style (styles are independent: the values do not sum to 1)
+    juce::String alternativesJson;      // [{"style":"Electronic---Techno","p":0.31}, ...] the next most likely styles
+    juce::String topStyle;              // raw Discogs label
+};
+
+// Turns the 400 style probabilities into main genre, sub-genre and alternatives.
+Detection interpret (const std::vector<float>& probabilities);
 
 // Wraps the Discogs-EffNet ONNX model (400 music styles). Thread-safe: classify() locks internally.
 class GenreClassifier

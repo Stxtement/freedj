@@ -28,7 +28,7 @@ public:
 
     // Tracks
     std::vector<TrackRecord> loadAllTracks();
-    struct KnownFile { juce::int64 id; juce::int64 size; juce::int64 modified; bool missing; };
+    struct KnownFile { juce::int64 id; juce::int64 size; juce::int64 modified; bool missing; juce::String fingerprint; };
     std::unordered_map<juce::String, KnownFile> loadKnownFiles();
     // Inserts new tracks and updates existing ones (matched by path). Sets record.id on insert.
     bool upsertTracks (std::vector<TrackRecord>& tracks);

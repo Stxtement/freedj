@@ -2,6 +2,8 @@
 // in the output order of the Discogs-EffNet model. Format: "Category---Style".
 #pragma once
 
+#include <juce_core/juce_core.h>
+
 namespace pathboard::genre
 {
 inline constexpr const char* discogsStyles[400] = {
@@ -406,4 +408,7 @@ inline constexpr const char* discogsStyles[400] = {
     "Stage & Screen---Soundtrack",
     "Stage & Screen---Theme"
 };
+// The names are UTF-8 (some contain accents): always convert with this, never with String (const char*).
+inline juce::String discogsStyle (int index) { return juce::String::fromUTF8 (discogsStyles[index]); }
+
 } // namespace pathboard::genre

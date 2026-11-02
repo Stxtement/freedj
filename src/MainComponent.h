@@ -11,6 +11,7 @@
 #include "UI/DJLookAndFeel.h"
 #include "Waveform/WaveformDisplay.h"
 #include <juce_data_structures/juce_data_structures.h>
+#include <unordered_set>
 
 namespace pathboard
 {
@@ -53,6 +54,13 @@ private:
     void showControllerSettings();
     juce::File getControllerMappingFile() const { return getDataFolder().getChildFile ("controller-mapping.json"); }
 
+    // Smart Matching and genre detection
+    void updateMatchReferences();
+    void detectGenre (const std::vector<juce::int64>& ids);
+    void startGenreModelDownload (std::vector<juce::int64> thenDetect);
+    static juce::File findGenreModelFile();
+    ModelDownload genreDownload;
+
     // Stems
     void requestStems (int deck);
     void updateStemStatus (int deck);
@@ -61,6 +69,9 @@ private:
     void prepareStems (const std::vector<juce::File>& files);
     static juce::File findModelFile();
     int analysisCheckCounter = 0;
+    void precomputeStemsStep();   // needs <unordered_set>, included below
+    bool autoPrecomputeStems = true;
+    std::unordered_set<juce::int64> stemPrepRequested;   // tracks already queued for background stems in this run
 
     juce::PropertiesFile& settings;
     DJLookAndFeel lookAndFeel;
@@ -69,7 +80,8 @@ private:
     AudioEngine engine;
     LibraryManager library;
     AnalysisManager analysis { library, engine.getFormatManager() };
-    stems::StemManager stemManager { getDataFolder().getChildFile ("stems"), 20LL * 1024 * 1024 * 1024, engine.getFormatManager() };
+    static constexpr juce::int64 stemCacheBytes = 20LL * 1024 * 1024 * 1024;
+    stems::StemManager stemManager { getDataFolder().getChildFile ("stems"), stemCacheBytes, engine.getFormatManager() };
 
     struct StemRequest
     {

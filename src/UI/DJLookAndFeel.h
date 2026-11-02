@@ -19,6 +19,9 @@ namespace Colours
     const juce::Colour play         { 0xff32d06c };
     const juce::Colour danger       { 0xffff3b4a };
 
+    const juce::Colour matchVeryGood { 0xff2ecc71 };   // Smart Matching: very good fit
+    const juce::Colour matchGood     { 0xff3b82f6 };   // Smart Matching: good fit
+
     inline juce::Colour forDeck (int deck) { return deck == 0 ? deckA : deckB; }
 }
 

@@ -54,7 +54,7 @@ namespace
 
     constexpr int menuLoadA = 1, menuLoadB = 2, menuNewPlaylist = 3, menuRemoveFromPlaylist = 4, menuReveal = 5,
                   menuRename = 6, menuMove = 7, menuCopy = 8, menuRemoveLibrary = 9, menuLocate = 10,
-                  menuAnalyse = 11, menuResetManual = 12, menuPrepareStems = 13,
+                  menuAnalyse = 11, menuResetManual = 12, menuPrepareStems = 13, menuDetectGenre = 14,
                   menuRatingBase = 100, menuPlaylistBase = 1000;
 }
 
@@ -261,6 +261,44 @@ LibraryBrowser::LibraryBrowser (LibraryManager& lib) : library (lib)
     ratingFilter.onChange = [this] { spec.minRating = ratingFilter.getSelectedId() - 1; refresh(); };
     addAndMakeVisible (ratingFilter);
 
+    smartMatchToggle.setTooltip ("Smart Matching: marks tracks that fit the track on the deck.\n"
+                                 "Green = very good, blue = good, no colour = does not fit.\n"
+                                 "Based on tempo (also half / double time), key (Camelot wheel) and genre. "
+                                 "Only values that are known are used.");
+    smartMatchToggle.onClick = [this]
+    {
+        setSmartMatch (smartMatchToggle.getToggleState(), matchMode);
+        if (onSmartMatchSettingsChanged)
+            onSmartMatchSettingsChanged();
+    };
+    addAndMakeVisible (smartMatchToggle);
+
+    matchModeBox.addItem ("Auto", 1);
+    matchModeBox.addItem ("Deck 1", 2);
+    matchModeBox.addItem ("Deck 2", 3);
+    matchModeBox.addItem ("Both decks", 4);
+    matchModeBox.setSelectedId (1, juce::dontSendNotification);
+    matchModeBox.setTooltip ("Which deck the matching refers to.\nAuto: the playing deck (or the deck loaded last if none is playing).\nBoth: tracks must fit both decks.");
+    matchModeBox.onChange = [this]
+    {
+        setSmartMatch (smartMatchEnabled, (MatchMode) (matchModeBox.getSelectedId() - 1));
+        if (onSmartMatchSettingsChanged)
+            onSmartMatchSettingsChanged();
+    };
+    addAndMakeVisible (matchModeBox);
+
+    matchFilterBox.addItem ("All tracks", 1);
+    matchFilterBox.addItem ("Matches only", 2);
+    matchFilterBox.addItem ("Green only", 3);
+    matchFilterBox.setSelectedId (1, juce::dontSendNotification);
+    matchFilterBox.setTooltip ("Filter the list by Smart Matching.\nMatches only: green and blue tracks. Green only: very good matches.\nNeeds Smart Match switched on and a track on a deck.");
+    matchFilterBox.onChange = [this]
+    {
+        matchFilterLevel = matchFilterBox.getSelectedId() - 1;
+        refresh();
+    };
+    addAndMakeVisible (matchFilterBox);
+
     addFolderButton.onClick = [this] { addFolder(); };
     rescanButton.setTooltip ("Rescan all music folders: finds new, changed, moved and missing files");
     rescanButton.onClick = [this]
@@ -387,6 +425,9 @@ void LibraryBrowser::resized()
     rescanButton.setBounds (top.removeFromRight (70).reduced (2, 0));
     addFolderButton.setBounds (top.removeFromRight (76).reduced (2, 0));
     ratingFilter.setBounds (top.removeFromRight (100).reduced (2, 0));
+    matchFilterBox.setBounds (top.removeFromRight (104).reduced (2, 0));
+    matchModeBox.setBounds (top.removeFromRight (92).reduced (2, 0));
+    smartMatchToggle.setBounds (top.removeFromRight (104).reduced (2, 0));
     keyFilter.setBounds (top.removeFromRight (54).reduced (2, 0));
     bpmTo.setBounds (top.removeFromRight (70).reduced (2, 0));
     bpmFrom.setBounds (top.removeFromRight (70).reduced (2, 0));
@@ -511,7 +552,20 @@ void LibraryBrowser::refresh()
         }
     }
 
+    // Smart Matching filter: keep only tracks that fit the reference deck(s). Without a
+    // reference track nothing can be judged, so the list stays complete.
+    if (smartMatchEnabled && matchFilterLevel > 0 && ! matchSubjects.empty())
+    {
+        const auto minLevel = matchFilterLevel == 2 ? MatchLevel::veryGood : MatchLevel::good;
+        std::vector<int> kept;
+        for (int i = 0; i < (int) rows.size(); ++i)
+            if ((int) getMatchDetail (i).level >= (int) minLevel)
+                kept.push_back (rows[(size_t) i]);
+        rows = std::move (kept);
+    }
+
     table.updateContent();
+    rowMatchCache.assign (rows.size(), -1);   // rows changed: match colours are computed again when painted
 
     juce::SparseSet<int> restore;
     if (! previouslySelected.empty())
@@ -537,6 +591,114 @@ void LibraryBrowser::refresh()
     }
 
     updateStatus();
+}
+
+//==============================================================================
+// Smart Matching
+void LibraryBrowser::setSmartMatch (bool enabled, MatchMode mode)
+{
+    smartMatchEnabled = enabled;
+    matchMode = mode;
+    smartMatchToggle.setToggleState (enabled, juce::dontSendNotification);
+    matchModeBox.setSelectedId ((int) mode + 1, juce::dontSendNotification);
+    matchModeBox.setEnabled (enabled);
+    matchFilterBox.setEnabled (enabled);
+    rebuildMatchSubjects();
+}
+
+void LibraryBrowser::setMatchReferences (const std::array<MatchReference, 2>& refs)
+{
+    // Remember which deck got a track last: it is the reference when nothing is playing.
+    for (size_t d = 0; d < 2; ++d)
+        if (refs[d].trackId != matchRefs[d].trackId && refs[d].trackId != 0)
+            lastLoadedDeck = (int) d;
+
+    bool changed = false;
+    for (size_t d = 0; d < 2; ++d)
+        changed = changed || refs[d].trackId != matchRefs[d].trackId || refs[d].playing != matchRefs[d].playing
+                  || std::abs (refs[d].playbackBpm - matchRefs[d].playbackBpm) > 0.01;
+    if (! changed)
+        return;
+
+    matchRefs = refs;
+    rebuildMatchSubjects();
+}
+
+void LibraryBrowser::rebuildMatchSubjects()
+{
+    matchSubjects.clear();
+    matchReferenceIds.clear();
+    rowMatchCache.assign (rows.size(), -1);
+
+    if (smartMatchEnabled)
+    {
+        std::vector<int> decks;
+        auto loaded = [this] (int d) { return matchRefs[(size_t) d].trackId != 0; };
+
+        if (matchMode == MatchMode::deck1)       { if (loaded (0)) decks.push_back (0); }
+        else if (matchMode == MatchMode::deck2)  { if (loaded (1)) decks.push_back (1); }
+        else if (matchMode == MatchMode::both)   { for (int d = 0; d < 2; ++d) if (loaded (d)) decks.push_back (d); }
+        else
+        {
+            // Automatic: what is playing; if nothing plays, the deck that was loaded last.
+            for (int d = 0; d < 2; ++d)
+                if (loaded (d) && matchRefs[(size_t) d].playing)
+                    decks.push_back (d);
+            if (decks.empty())
+            {
+                if (lastLoadedDeck >= 0 && loaded (lastLoadedDeck)) decks.push_back (lastLoadedDeck);
+                else for (int d = 0; d < 2; ++d) if (loaded (d)) decks.push_back (d);
+            }
+        }
+
+        for (int d : decks)
+            if (const auto* t = library.findTrack (matchRefs[(size_t) d].trackId))
+            {
+                matchSubjects.push_back (makeSubject (*t, matchRefs[(size_t) d].playbackBpm));
+                matchReferenceIds.push_back (t->id);
+            }
+    }
+
+    // An active match filter depends on the reference tracks, so the list is built again.
+    if (matchFilterLevel > 0 && smartMatchEnabled)
+        refresh();
+    else
+        table.repaint();
+}
+
+MatchDetail LibraryBrowser::getMatchDetail (int row) const
+{
+    MatchDetail result;
+    if (! smartMatchEnabled || matchSubjects.empty())
+        return result;
+    const auto* t = trackAt (row);
+    if (t == nullptr || t->missing || std::find (matchReferenceIds.begin(), matchReferenceIds.end(), t->id) != matchReferenceIds.end())
+        return result;
+
+    // With several reference decks a track must fit all of them: the weakest result counts.
+    const auto candidate = makeSubject (*t);
+    result.level = MatchLevel::veryGood;
+    for (const auto& subject : matchSubjects)
+    {
+        const auto d = evaluateMatch (subject, candidate);
+        if ((int) d.level < (int) result.level || result.explanation.isEmpty())
+            result = d;
+        if (d.level == MatchLevel::none)
+            break;
+    }
+    return result;
+}
+
+MatchLevel LibraryBrowser::getMatchLevel (int row) const
+{
+    if (! smartMatchEnabled || ! juce::isPositiveAndBelow (row, (int) rows.size()))
+        return MatchLevel::none;
+    if (rowMatchCache.size() != rows.size())
+        rowMatchCache.assign (rows.size(), -1);
+    auto& cached = rowMatchCache[(size_t) row];
+    if (cached < 0)
+        cached = (signed char) getMatchDetail (row).level;
+    return (MatchLevel) cached;
 }
 
 void LibraryBrowser::moveSelection (int rowsDown)
@@ -575,6 +737,8 @@ void LibraryBrowser::updateStatus()
     if (analysis != nullptr)
     {
         analyseButton.setButtonText (analysis->isBusy() ? "Stop" : "Analyse");
+        if (! analysis->isGenreModelInstalled())
+            text << "   |   genre detection: model not installed (right-click > Detect genre)";
         if (analysis->isBusy())
             text << "   |   analysing " << analysis->getDone() + analysis->getFailed() + analysis->getSkippedCloud() << "/" << analysis->getQueued();
         else if (analysis->getSkippedCloud() > 0)
@@ -622,12 +786,27 @@ void LibraryBrowser::timerCallback()
 }
 
 //==============================================================================
-void LibraryBrowser::paintRowBackground (juce::Graphics& g, int row, int, int, bool selected)
+void LibraryBrowser::paintRowBackground (juce::Graphics& g, int row, int width, int height, bool selected)
 {
-    if (selected)
-        g.fillAll (Colours::deckA.withAlpha (0.28f));
-    else if (row % 2 == 1)
+    if (row % 2 == 1)
         g.fillAll (juce::Colours::white.withAlpha (0.025f));
+
+    // Smart Matching: tint and a bar on the left; the selection highlight is drawn on top and stays visible.
+    const auto matchLevel = getMatchLevel (row);
+    if (matchLevel != MatchLevel::none)
+    {
+        const auto colour = matchLevel == MatchLevel::veryGood ? Colours::matchVeryGood : Colours::matchGood;
+        g.setColour (colour.withAlpha (0.16f));
+        g.fillRect (0, 0, width, height);
+        g.setColour (colour);
+        g.fillRect (0, 0, 4, height);
+    }
+
+    if (selected)
+    {
+        g.setColour (Colours::deckA.withAlpha (0.28f));
+        g.fillRect (0, 0, width, height);
+    }
 }
 
 void LibraryBrowser::paintCell (juce::Graphics& g, int row, int column, int width, int height, bool selected)
@@ -676,7 +855,7 @@ void LibraryBrowser::paintCell (juce::Graphics& g, int row, int column, int widt
         case TrackColumn::artist:     text = t->artist; break;
         case TrackColumn::remix:      text = t->remix; break;
         case TrackColumn::album:      text = t->album; break;
-        case TrackColumn::genre:      text = t->genre; break;
+        case TrackColumn::genre:      text = t->displayGenre(); break;
         case TrackColumn::key:        text = t->key; justification = juce::Justification::centred; break;
         case TrackColumn::bpm:        text = t->bpm > 0.0 ? juce::String (t->bpm, 2) : juce::String(); justification = juce::Justification::centredRight; break;
         case TrackColumn::length:     text = formatLength (t->lengthSeconds); justification = juce::Justification::centredRight; break;
@@ -700,8 +879,13 @@ void LibraryBrowser::paintCell (juce::Graphics& g, int row, int column, int widt
     else if (! selected && col != TrackColumn::title && col != TrackColumn::artist)
         colour = Colours::text.withAlpha (0.8f);
 
+    // A genre the program detected (not the user's own) is shown dimmed and in italics.
+    const bool automaticGenre = col == TrackColumn::genre && t->isGenreAutomatic();
+    if (automaticGenre)
+        colour = colour.withAlpha (0.62f);
+
     g.setColour (colour);
-    g.setFont (juce::FontOptions (13.5f, col == TrackColumn::title ? juce::Font::bold : juce::Font::plain));
+    g.setFont (juce::FontOptions (13.5f, automaticGenre ? juce::Font::italic : (col == TrackColumn::title ? juce::Font::bold : juce::Font::plain)));
     g.drawText (text, 4, 0, width - 8, height, justification, true);
 }
 
@@ -716,6 +900,7 @@ void LibraryBrowser::sortOrderChanged (int newSortColumnId, bool isForwards)
     if (currentView.view == View::playlist && findPlaylist (currentView.playlistId).kind == PlaylistInfo::Kind::playlist)
     {
         sortTrackIndices (library.getTracks(), rows, spec.sortColumn, spec.ascending);
+        rowMatchCache.assign (rows.size(), -1);
         table.updateContent();
         table.repaint();
         return;
@@ -732,11 +917,40 @@ void LibraryBrowser::selectedRowsChanged (int)
         infoPanel.setTrack (nullptr);
 }
 
-juce::String LibraryBrowser::getCellTooltip (int row, int)
+juce::String LibraryBrowser::getCellTooltip (int row, int column)
 {
-    if (const auto* t = trackAt (row))
-        return t->artist + " - " + t->title + (t->missing ? "\nFILE IS MISSING" : "") + "\n" + t->path;
-    return {};
+    const auto* t = trackAt (row);
+    if (t == nullptr)
+        return {};
+
+    if (columnFromId (column) == TrackColumn::bpm && t->bpm > 0.0)
+        return "Original tempo of the file: " + juce::String (t->bpm, 2) + " BPM"
+               + (t->analysisVersion > 0 && ! t->isManual (TrackRecord::manualBpm) ? "\nDetected automatically, " + juce::String (juce::roundToInt (t->bpmConfidence * 100.0)) + " % confidence" : juce::String())
+               + "\n(a deck shows the playback tempo with the pitch fader applied)";
+
+    if (columnFromId (column) == TrackColumn::genre && t->genreAutoMain.isNotEmpty())
+    {
+        juce::String tip = t->genre.isNotEmpty() ? "Your genre: " + t->genre + "\n" : juce::String();
+        tip << "Detected: " << (t->genreAutoSub.isNotEmpty() ? t->genreAutoMain + " / " + t->genreAutoSub : t->genreAutoMain)
+            << " (" << juce::roundToInt (t->genreConfidence * 100.0) << " %)"
+            << (t->genreConfidence < 0.25 ? " - too uncertain to be used" : "");
+        const auto alternatives = juce::JSON::parse (t->genreAlternatives);
+        if (auto* list = alternatives.getArray())
+        {
+            juce::StringArray names;
+            for (const auto& a : *list)
+                names.add (a.getProperty ("style", {}).toString().replace ("---", " / ") + " " + juce::String (juce::roundToInt ((double) a.getProperty ("p", 0.0) * 100.0)) + " %");
+            if (! names.isEmpty())
+                tip << "\nAlso possible: " << names.joinIntoString (", ");
+        }
+        return tip;
+    }
+
+    juce::String tip = t->artist + " - " + t->title + (t->missing ? "\nFILE IS MISSING" : "") + "\n" + t->path;
+    const auto detail = getMatchDetail (row);
+    if (detail.level != MatchLevel::none)
+        tip = juce::String (detail.level == MatchLevel::veryGood ? "Very good match: " : "Good match: ") + detail.explanation + "\n" + tip;
+    return tip;
 }
 
 void LibraryBrowser::cellDoubleClicked (int row, int column, const juce::MouseEvent&)
@@ -856,6 +1070,7 @@ void LibraryBrowser::showContextMenu (int row)
     menu.addSeparator();
     menu.addItem (menuAnalyse, "Analyse again (BPM, key, grid)", analysis != nullptr);
     menu.addItem (menuPrepareStems, "Prepare stems in the background", (bool) onPrepareStems);
+    menu.addItem (menuDetectGenre, "Detect genre (AI)", (bool) onDetectGenre);
     if (single && first != nullptr && first->manualFlags != 0)
         menu.addItem (menuResetManual, "Reset manual corrections (BPM, key, grid, genre)");
     menu.addSeparator();
@@ -891,6 +1106,11 @@ void LibraryBrowser::showContextMenu (int row)
         else if (result == menuCopy)                          self->moveOrCopyFiles (ids, false);
         else if (result == menuRemoveLibrary)                 lib.removeTracks (ids);
         else if (result == menuAnalyse)                       { if (self->analysis != nullptr) { self->analysis->retrySkipped(); self->analysis->enqueue (ids, true); } }
+        else if (result == menuDetectGenre)
+        {
+            if (self->onDetectGenre)
+                self->onDetectGenre (ids);
+        }
         else if (result == menuPrepareStems)
         {
             std::vector<juce::File> files;

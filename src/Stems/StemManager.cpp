@@ -123,8 +123,7 @@ StemManager::StemManager (const juce::File& cacheFolder, juce::int64 maxCacheByt
 StemManager::~StemManager()
 {
     cancelAll();
-    if (downloadThread != nullptr)
-        downloadThread->stopThread (10000);
+    download.cancel();
     stopThread (60000);
 }
 

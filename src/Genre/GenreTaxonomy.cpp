@@ -1,5 +1,6 @@
 #include "GenreTaxonomy.h"
 #include "DiscogsStyles.h"
+#include "GenreClassifier.h"
 #include <map>
 
 namespace pathboard::genre
@@ -90,17 +91,18 @@ namespace
     {
         static const std::map<juce::String, GenreLabel> m = [] {
             std::map<juce::String, GenreLabel> r;
-            for (const auto* raw : discogsStyles)
+            for (int i = 0; i < numStyles; ++i)
             {
+                const auto raw = discogsStyle (i);
                 const auto label = fromDiscogs (raw);
-                const auto key = normalise (juce::String (raw).fromLastOccurrenceOf ("---", false, false));
+                const auto key = normalise (raw.fromLastOccurrenceOf ("---", false, false));
                 if (r.find (key) == r.end())
                     r[key] = label;
             }
             // Top-level category names and main-genre names are genres too ("Rock", "Reggae", "Jazz").
-            for (const auto* raw : discogsStyles)
+            for (int i = 0; i < numStyles; ++i)
             {
-                const juce::String category = juce::String (raw).upToFirstOccurrenceOf ("---", false, false);
+                const juce::String category = discogsStyle (i).upToFirstOccurrenceOf ("---", false, false);
                 const auto key = normalise (category);
                 if (r.find (key) == r.end())
                     r[key] = fromDiscogs (category + "---" + category);

@@ -3,6 +3,8 @@
 #endif
 
 #include "GenreClassifier.h"
+#include "DiscogsStyles.h"
+#include "GenreTaxonomy.h"
 #include <juce_dsp/juce_dsp.h>
 
 #include <onnxruntime_cxx_api.h>
@@ -66,25 +68,34 @@ std::vector<float> resampleSinc (const std::vector<float>& in, double inRate, do
     const double ratio = inRate / outRate;                     // input samples per output sample
     const double cutoff = std::min (1.0, outRate / inRate) * 0.97;   // relative to the input Nyquist
     constexpr int halfTaps = 24;
+    constexpr int tableSteps = 256;                            // kernel samples per input sample
     const int outLength = (int) ((double) in.size() / ratio);
     std::vector<float> out ((size_t) outLength);
     const int n = (int) in.size();
     const double pi = juce::MathConstants<double>::pi;
+
+    // Windowed-sinc kernel, tabulated once: x in [-halfTaps, halfTaps], linear interpolation between entries.
+    std::vector<float> kernel ((size_t) (2 * halfTaps * tableSteps + 2), 0.0f);
+    for (size_t k = 0; k < kernel.size(); ++k)
+    {
+        const double x = (double) k / tableSteps - halfTaps;
+        const double arg = pi * x * cutoff;
+        const double sinc = std::abs (arg) < 1.0e-9 ? 1.0 : std::sin (arg) / arg;
+        const double window = 0.5 + 0.5 * std::cos (pi * x / halfTaps);   // Hann over the kernel
+        kernel[k] = (float) (sinc * window * cutoff);
+    }
 
     for (int i = 0; i < outLength; ++i)
     {
         const double centre = (double) i * ratio;
         const int first = (int) std::floor (centre) - halfTaps + 1;
         double sum = 0.0;
-        for (int j = first; j < first + 2 * halfTaps; ++j)
+        for (int j = std::max (0, first); j < std::min (n, first + 2 * halfTaps); ++j)
         {
-            if (j < 0 || j >= n)
-                continue;
-            const double x = (double) j - centre;
-            const double arg = pi * x * cutoff;
-            const double sinc = std::abs (arg) < 1.0e-9 ? 1.0 : std::sin (arg) / arg;
-            const double window = 0.5 + 0.5 * std::cos (pi * x / halfTaps);   // Hann over the kernel
-            sum += (double) in[(size_t) j] * sinc * window * cutoff;
+            const double position = ((double) j - centre + halfTaps) * tableSteps;
+            const int index = (int) position;
+            const float fraction = (float) (position - index);
+            sum += (double) in[(size_t) j] * (kernel[(size_t) index] + fraction * (kernel[(size_t) index + 1] - kernel[(size_t) index]));
         }
         out[(size_t) i] = (float) sum;
     }
@@ -204,6 +215,41 @@ std::vector<float> computeMelPatches (const std::vector<float>& audio, const Mel
         }
     }
     return patches;
+}
+
+//==============================================================================
+Detection interpret (const std::vector<float>& p)
+{
+    Detection d;
+    if ((int) p.size() != numStyles)
+        return d;
+
+    std::vector<int> order ((size_t) numStyles);
+    for (int i = 0; i < numStyles; ++i)
+        order[(size_t) i] = i;
+    std::partial_sort (order.begin(), order.begin() + 5, order.end(), [&] (int a, int b) { return p[(size_t) a] > p[(size_t) b]; });
+
+    const int top = order[0];
+    const auto label = fromDiscogs (discogsStyle (top));
+    d.main = label.main;
+    d.sub = label.sub;
+    d.category = label.category;
+    d.confidence = p[(size_t) top];
+    d.topStyle = discogsStyle (top);
+
+    juce::Array<juce::var> alternatives;
+    for (int i = 1; i < 5; ++i)
+    {
+        const int idx = order[(size_t) i];
+        if (p[(size_t) idx] < 0.05f)
+            break;
+        auto* o = new juce::DynamicObject();
+        o->setProperty ("style", discogsStyle (idx));
+        o->setProperty ("p", std::round (p[(size_t) idx] * 1000.0) / 1000.0);
+        alternatives.add (juce::var (o));
+    }
+    d.alternativesJson = juce::JSON::toString (juce::var (alternatives), true);
+    return d;
 }
 
 //==============================================================================

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Stems/ModelDownload.h"
 #include "Stems/StemCache.h"
 #include "Stems/StemSeparator.h"
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -55,7 +56,7 @@ public:
     // Starts the model download (370 MB, verified by SHA-256). onProgress(0..1) and onFinished run on the
     // message thread; onFinished gets an empty string on success.
     void downloadModel (std::function<void (float)> onProgress, std::function<void (const juce::String&)> onFinished);
-    bool isDownloading() const { return downloading.load(); }
+    bool isDownloading() const;
 
     // Returns a request id. `interactive` jobs are processed before background ones.
     int request (const juce::File& file, Quality quality, bool interactive, Callback onDone);
@@ -89,8 +90,8 @@ private:
     StemSeparator separator;
     juce::File modelFile;
     std::atomic<bool> preferGpu { true };
-    std::atomic<bool> downloading { false };
     bool modelHashChecked = false;
+    ModelDownload download;
 
     mutable juce::CriticalSection lock;
     std::deque<Job> queue;
@@ -100,8 +101,6 @@ private:
     bool workerActive = false;
     int currentJobId = 0;
     juce::String deviceName;
-
-    std::unique_ptr<juce::Thread> downloadThread;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (StemManager)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StemManager)

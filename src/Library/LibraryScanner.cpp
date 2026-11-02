@@ -1,5 +1,6 @@
 #include "LibraryScanner.h"
 #include "TrackMetadata.h"
+#include "Analysis/AudioAnalysis.h"
 #include <unordered_set>
 
 namespace pathboard
@@ -191,7 +192,20 @@ void LibraryScanner::run()
             if (TrackMetadata::read (juce::File (f.path), record))
             {
                 record.firstSeen = now;
-                if (known.find (f.path) != known.end()) ++summary.updated; else ++summary.added;
+                const auto knownIt = known.find (f.path);
+                if (knownIt != known.end())
+                {
+                    ++summary.updated;
+                    // Only the timestamp differs (cloud sync, copy)? Then the content fingerprint matches the
+                    // stored one and the analysis is kept. A different size is always new content.
+                    if (knownIt->second.fingerprint.isNotEmpty() && knownIt->second.size == f.size
+                        && ! analysis::isOnlineOnly (juce::File (f.path)))
+                        record.fingerprint = analysis::computeFingerprint (juce::File (f.path));
+                }
+                else
+                {
+                    ++summary.added;
+                }
                 batch.push_back (std::move (record));
                 if ((int) batch.size() >= batchSize)
                     flush();

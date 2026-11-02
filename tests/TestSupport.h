@@ -26,5 +26,6 @@ int runAnalysisStorageTests();
 int runStemTests();
 int runControllerTests();
 int runGenreTests();
+int runMatchTests();
 int runGenreProbe (const juce::StringArray& files);
 int runStemProbe (const juce::File& audioFile, double start, double seconds);

@@ -10,6 +10,8 @@ namespace
     constexpr const char* libraryColumnsKey = "libraryColumns";
     constexpr const char* stemQualityKey = "stemQuality";
     constexpr const char* autoStemsKey = "autoStems";
+    constexpr const char* smartMatchKey = "smartMatch";
+    constexpr const char* smartMatchModeKey = "smartMatchMode";
     constexpr double countAsPlayedAfterSeconds = 15.0;
     constexpr int backupsToKeep = 7;
 }
@@ -38,7 +40,7 @@ MainComponent::MainComponent (juce::PropertiesFile& s) : settings (s)
                                                .withMessage (error + "\n\nOpen AUDIO SETUP to choose another device."),
                                            nullptr);
 
-    titleLabel.setText ("PATHBOARD DJ", juce::dontSendNotification);
+    titleLabel.setText ("FREE DJ", juce::dontSendNotification);
     titleLabel.setFont (juce::FontOptions (18.0f, juce::Font::bold));
     titleLabel.setColour (juce::Label::textColourId, Colours::text);
     statusLabel.setJustificationType (juce::Justification::centredRight);
@@ -63,6 +65,17 @@ MainComponent::MainComponent (juce::PropertiesFile& s) : settings (s)
             if (tracking[(size_t) d].trackId != 0)
                 library.setManualGrid (tracking[(size_t) d].trackId, bpm, firstBeat, downbeat);
         };
+
+    // Genre detection (optional AI model) and Smart Matching (on by default, switchable, remembered).
+    analysis.setGenreModelFile (findGenreModelFile());
+    browser.setSmartMatch (settings.getBoolValue (smartMatchKey, true),
+                           (LibraryBrowser::MatchMode) juce::jlimit (0, 3, settings.getIntValue (smartMatchModeKey, 0)));
+    browser.onSmartMatchSettingsChanged = [this]
+    {
+        settings.setValue (smartMatchKey, browser.isSmartMatchEnabled());
+        settings.setValue (smartMatchModeKey, (int) browser.getMatchMode());
+    };
+    browser.onDetectGenre = [this] (const std::vector<juce::int64>& ids) { detectGenre (ids); };
 
     // Controller: saved mapping if there is one, otherwise the FLX4 defaults. Every change is saved at once.
     if (getControllerMappingFile().existsAsFile())
@@ -111,6 +124,7 @@ MainComponent::~MainComponent()
     delete audioDialog.getComponent();
     stemManager.cancelAll();
     analysis.cancel();
+    genreDownload.cancel();
     saveSettings();
     setLookAndFeel (nullptr);
     juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
@@ -178,6 +192,7 @@ void MainComponent::loadIntoDeck (const juce::File& file, int deckIndex)
         if (const auto* t = library.findTrackByPath (tracking[(size_t) deckIndex].path))
             tracking[(size_t) deckIndex].trackId = t->id;
         updateDeckInfo (deckIndex);
+        updateMatchReferences();   // matching follows the new track at once, not on the next timer tick
 
         // A new track: drop what was requested for the previous one and start stems for this one.
         stemManager.cancel (stemRequests[(size_t) deckIndex].id);
@@ -370,6 +385,37 @@ void MainComponent::prepareStems (const std::vector<juce::File>& files)
         stemManager.request (f, stemQuality, false, nullptr);
 }
 
+// Background stems for the library: a few tracks at a time, only while nothing is playing and the
+// analysis is idle, so the audio and the analysis are not disturbed. The cache is filled up to 80 % of
+// its limit; older entries are never evicted for this (the cache is least-recently-used only for stems
+// that were asked for). Tracks need a fingerprint, i.e. they have been analysed first.
+void MainComponent::precomputeStemsStep()
+{
+    if (! autoPrecomputeStems || ! stemManager.isModelPresent() || stemManager.isDownloading()
+        || stemManager.isBusy() || stemManager.getQueueLength() > 0 || analysis.isBusy() || library.isScanning())
+        return;
+    for (int d = 0; d < 2; ++d)
+        if (engine.getDeck (d).isPlaying() || engine.getDeck (d).isLoading())
+            return;
+
+    auto& cache = stemManager.getCache();
+    if (cache.getUsedBytes() >= stemCacheBytes / 10 * 8)
+        return;
+
+    int queued = 0;
+    for (const auto& t : library.getTracks())
+    {
+        if (t.missing || t.fingerprint.isEmpty() || t.analysisVersion <= 0 || stemPrepRequested.count (t.id) != 0)
+            continue;
+        stemPrepRequested.insert (t.id);
+        if (cache.contains (t.fingerprint, stemQuality))
+            continue;
+        stemManager.request (juce::File (t.path), stemQuality, false, nullptr);
+        if (++queued >= 2)
+            break;
+    }
+}
+
 void MainComponent::updateDeckInfo (int d)
 {
     auto& tr = tracking[(size_t) d];
@@ -495,6 +541,89 @@ void MainComponent::trackPlayHistory()
     }
 
     browser.setLoadedTracks (tracking[0].trackId, tracking[1].trackId);
+    updateMatchReferences();
+}
+
+void MainComponent::updateMatchReferences()
+{
+    std::array<LibraryBrowser::MatchReference, 2> refs;
+    for (size_t d = 0; d < 2; ++d)
+    {
+        auto& deck = engine.getDeck ((int) d);
+        refs[d].trackId = deck.hasTrackLoaded() ? tracking[d].trackId : 0;
+        refs[d].playing = deck.isPlaying();
+        refs[d].playbackBpm = deck.getPlaybackBpm();   // what is audible: original tempo with the pitch applied
+    }
+    browser.setMatchReferences (refs);
+}
+
+//==============================================================================
+juce::File MainComponent::findGenreModelFile()
+{
+    const juce::String name = genre::ModelInfo::fileName;
+    juce::Array<juce::File> candidates;
+    const auto env = juce::SystemStats::getEnvironmentVariable ("PATHBOARD_MODEL_DIR", {});
+    if (env.isNotEmpty())
+        candidates.add (juce::File (env).getChildFile (name));
+    candidates.add (getDataFolder().getChildFile ("models").getChildFile (name));
+    candidates.add (juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory().getChildFile ("models").getChildFile (name));
+
+    for (const auto& f : candidates)
+        if (f.existsAsFile() && f.getSize() == genre::ModelInfo::sizeBytes)
+            return f;
+    return getDataFolder().getChildFile ("models").getChildFile (name);   // where a download goes
+}
+
+void MainComponent::detectGenre (const std::vector<juce::int64>& ids)
+{
+    if (analysis.isGenreModelInstalled())
+    {
+        analysis.retrySkipped();
+        analysis.enqueueGenre (ids);
+        return;
+    }
+    startGenreModelDownload (ids);
+}
+
+void MainComponent::startGenreModelDownload (std::vector<juce::int64> thenDetect)
+{
+    if (genreDownload.isRunning())
+        return;
+
+    auto* window = new juce::AlertWindow ("Install the genre model",
+                                          "Genre detection needs a neural network model (Discogs-EffNet, by the Music Technology Group, "
+                                          "Universitat Pompeu Fabra).\n\n"
+                                          "Download: about 18 MB from essentia.upf.edu, checked against its checksum.\n"
+                                          "Licence: CC BY-NC-SA 4.0. It may be used for non-commercial purposes only.\n\n"
+                                          "Afterwards the genre of all your tracks is detected in the background. Continue?",
+                                          juce::MessageBoxIconType::QuestionIcon);
+    window->addButton ("Download", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    window->enterModalState (true, juce::ModalCallbackFunction::create ([this, thenDetect] (int result)
+    {
+        if (result != 1)
+            return;
+
+        const auto target = getDataFolder().getChildFile ("models").getChildFile (genre::ModelInfo::fileName);
+        genreDownload.start (genre::ModelInfo::downloadUrl, target, genre::ModelInfo::sizeBytes, genre::ModelInfo::sha256,
+                             [this] (float f) { statusLabel.setText ("Downloading the genre model " + juce::String (juce::roundToInt (f * 100.0f)) + " %", juce::dontSendNotification); },
+                             [this, thenDetect] (const juce::String& error)
+                             {
+                                 if (error.isNotEmpty())
+                                 {
+                                     juce::NativeMessageBox::showAsync (juce::MessageBoxOptions()
+                                                                            .withIconType (juce::MessageBoxIconType::WarningIcon)
+                                                                            .withTitle ("Model download failed")
+                                                                            .withMessage (error),
+                                                                        nullptr);
+                                     return;
+                                 }
+                                 analysis.setGenreModelFile (findGenreModelFile());
+                                 analysis.retrySkipped();
+                                 analysis.enqueueGenre (thenDetect);   // the ones the user asked for first
+                                 analysis.enqueuePending();            // then everything else that is missing
+                             });
+    }), true);
 }
 
 void MainComponent::timerCallback()
@@ -509,6 +638,7 @@ void MainComponent::timerCallback()
         analysisCheckCounter = 0;
         if (! library.isScanning() && ! analysis.isBusy())
             analysis.enqueuePending();
+        precomputeStemsStep();
     }
 
     auto& dm = engine.getDeviceManager();
@@ -523,6 +653,7 @@ void MainComponent::timerCallback()
                                  + " | outputs " + juce::String (engine.getMixer().getNumOutputChannels())
                                  + " | CPU " + juce::String (juce::roundToInt (dm.getCpuUsage() * 100.0)) + "%"
                                  + " | dropouts " + juce::String (dm.getXRunCount())
+                                 + (analysis.isBusy() ? " | analysing " + juce::String (analysis.getDone() + analysis.getFailed()) + "/" + juce::String (analysis.getQueued()) : juce::String())
                                  + (stemManager.getQueueLength() > 0 ? " | stems queued: " + juce::String (stemManager.getQueueLength()) : juce::String())
                                  + (controller.isConnected() ? " | controller: " + controller.getConnectedName() : juce::String (" | no controller")),
                              juce::dontSendNotification);

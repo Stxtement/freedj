@@ -1,6 +1,8 @@
 ﻿#include "TestSupport.h"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include "Analysis/AudioAnalysis.h"
+#include "Library/LibraryManager.h"
+#include "Library/SmartMatch.h"
 #include <juce_events/juce_events.h>
 
 int main (int argc, char* argv[])
@@ -35,6 +37,37 @@ int main (int argc, char* argv[])
         std::cout << "READY" << std::endl;
         juce::Thread::sleep ((int) (juce::String (argv[3]).getDoubleValue() * 1000.0));
         input->stop();
+        return 0;
+    }
+
+    // `--match-report <library.db> <title part>...`: how every track of the library matches each reference track.
+    if (argc >= 4 && juce::String (argv[1]) == "--match-report")
+    {
+        pathboard::LibraryManager lib;
+        if (! lib.open (juce::File (juce::String::fromUTF8 (argv[2]))).wasOk())
+            return 1;
+        for (int a = 3; a < argc; ++a)
+        {
+            const pathboard::TrackRecord* reference = nullptr;
+            for (const auto& t : lib.getTracks())
+                if (t.title.containsIgnoreCase (juce::String::fromUTF8 (argv[a]))) { reference = &t; break; }
+            if (reference == nullptr)
+                continue;
+            const auto refSubject = pathboard::makeSubject (*reference);
+            std::cout << "\nREFERENCE " << reference->title << ": " << (refSubject.bpm > 0 ? juce::String (refSubject.bpm, 2) : juce::String ("BPM unknown")) << " BPM, key "
+                      << (refSubject.key ? refSubject.key->text() : juce::String ("unknown")) << ", genre "
+                      << (refSubject.genres.empty() ? juce::String ("unknown") : refSubject.genres[0].toString()) << std::endl;
+            int veryGood = 0, good = 0;
+            for (const auto& t : lib.getTracks())
+            {
+                if (t.id == reference->id) continue;
+                const auto d = pathboard::evaluateMatch (refSubject, pathboard::makeSubject (t));
+                if (d.level == pathboard::MatchLevel::none) continue;
+                (d.level == pathboard::MatchLevel::veryGood ? veryGood : good)++;
+                std::cout << "  " << (d.level == pathboard::MatchLevel::veryGood ? "GREEN " : "BLUE  ") << t.title.paddedRight (' ', 34) << d.explanation << std::endl;
+            }
+            std::cout << "  -> " << veryGood << " green, " << good << " blue of " << lib.getTracks().size() - 1 << " tracks" << std::endl;
+        }
         return 0;
     }
 
@@ -109,6 +142,10 @@ int main (int argc, char* argv[])
         std::cout << std::endl << "=== Analysis ===" << std::endl;
         runAnalysisTests();
         runAnalysisStorageTests();
+
+        std::cout << std::endl << "=== Matching, genre, downloads ===" << std::endl;
+        runMatchTests();
+        runGenreTests();
 
         std::cout << std::endl << "=== Controller ===" << std::endl;
         runControllerTests();

@@ -81,6 +81,7 @@ private:
     juce::Label statsLabel;
     juce::ToggleButton writeToFileToggle { "Write tags into the file" };
     juce::TextButton saveButton { "Save" };
+    juce::TextButton useDetectedGenreButton { "Use detected genre" };
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (TrackInfoPanel)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackInfoPanel)

@@ -2,6 +2,7 @@
 
 #include "Analysis/AnalysisManager.h"
 #include "Library/LibraryManager.h"
+#include "Library/SmartMatch.h"
 #include "Library/TrackInfoPanel.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -31,6 +32,24 @@ public:
     std::function<void (const juce::File& file, int deckIndex)> onLoadRequest;
 
     void setAnalysisManager (AnalysisManager* manager);
+
+    // Smart Matching: tracks that fit what is on the decks are marked green (very good) or blue (good) in the list.
+    // Only uses values that are known; filters and sorting are not touched.
+    enum class MatchMode { automatic = 0, deck1 = 1, deck2 = 2, both = 3 };
+    struct MatchReference
+    {
+        juce::int64 trackId = 0;      // library id of the track on the deck, 0 = empty deck (or not in the library)
+        double playbackBpm = 0.0;     // audible tempo (with pitch applied), 0 = unknown
+        bool playing = false;
+    };
+    void setMatchReferences (const std::array<MatchReference, 2>& refs);
+    void setSmartMatch (bool enabled, MatchMode mode);
+    bool isSmartMatchEnabled() const { return smartMatchEnabled; }
+    MatchMode getMatchMode() const { return matchMode; }
+    std::function<void()> onSmartMatchSettingsChanged;
+
+    // Asked to detect the genre of these tracks (the owner installs the model first if needed).
+    std::function<void (const std::vector<juce::int64>&)> onDetectGenre;
 
     // Controller / keyboard navigation.
     void moveSelection (int rowsDown);          // negative = up
@@ -81,6 +100,10 @@ private:
     std::vector<juce::int64> getSelectedIds() const;
     PlaylistInfo findPlaylist (juce::int64 id) const;
 
+    void rebuildMatchSubjects();
+    MatchLevel getMatchLevel (int row) const;
+    MatchDetail getMatchDetail (int row) const;
+
     void showContextMenu (int row);
     void loadTrack (const TrackRecord& track, int deckIndex);
     void addFolder();
@@ -94,6 +117,18 @@ private:
 
     LibraryManager& library;
     AnalysisManager* analysis = nullptr;
+
+    bool smartMatchEnabled = false;
+    MatchMode matchMode = MatchMode::automatic;
+    std::array<MatchReference, 2> matchRefs;
+    int lastLoadedDeck = -1;
+    std::vector<MatchSubject> matchSubjects;
+    std::vector<juce::int64> matchReferenceIds;
+    mutable std::vector<signed char> rowMatchCache;   // per row: -1 not computed, else MatchLevel
+    juce::ToggleButton smartMatchToggle { "Smart Match" };
+    juce::ComboBox matchModeBox;
+    juce::ComboBox matchFilterBox;   // list filter: all / good+very good / very good only
+    int matchFilterLevel = 0;        // 0 = off, 1 = only matches, 2 = only very good matches
     ViewSelection currentView;
     std::vector<int> rows;
     QuerySpec spec;

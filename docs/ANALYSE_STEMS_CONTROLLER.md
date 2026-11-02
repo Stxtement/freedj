@@ -130,8 +130,68 @@ ob die LED-Antworten (Note-on mit Velocity 127/0 auf derselben Nummer) so am Pul
 Unter Windows kann ein MIDI-Gerät nur ein Programm gleichzeitig öffnen; läuft rekordbox, VirtualDJ oder
 Serato, meldet die App, dass sie das Gerät nicht öffnen kann.
 
-## 4. Noch nicht umgesetzt
+## 4. Genre-Erkennung (`src/Genre/`)
 
-Genre-/Stimmungs-Erkennung, Effekte, Slicer/Sampler/Scratch-Pads, Sideview (Sidelist, Automix, Sampler, Karaoke),
+**Modell.** Discogs-EffNet (Music Technology Group, UPF; offizielle ONNX-Datei von essentia.upf.edu, 18 MB,
+SHA-256 `a280825b…e43c` im Programm hinterlegt und beim Laden geprüft). **Lizenz CC BY-NC-SA 4.0: nur
+nicht-kommerzielle Nutzung.** Es liefert 400 Discogs-Stile (Electronic---Tech House, Rock---Alternative Rock, …).
+Das Modell wird erst nach Rückfrage heruntergeladen (Rechtsklick > „Detect genre (AI)“).
+
+**Ablauf.** Datei → Mono 16 kHz (Sinc-Resampler, 0,6 s pro Song) → Mel-Spektrogramm-Patches (128×96) →
+ONNX Runtime (CPU) → Mittel der Stil-Wahrscheinlichkeiten über bis zu 24 Patches. Ausgabe: Hauptgenre
+(z. B. House), Untergenre (Tech House), Musikstil-Familie (Electronic), Konfidenz = Wahrscheinlichkeit des
+stärksten Stils (die Stile sind unabhängig, die Werte ergeben zusammen nicht 1) und die nächsten Alternativen.
+Gespeichert in eigenen Spalten (Schema 3); **das eigene Genre-Tag wird nie überschrieben**. In der Liste erscheint
+ein automatisches Genre gedämpft und kursiv, und nur ab 25 % Konfidenz. Der Button „Use detected genre“ im Info-Panel
+übernimmt es bewusst als eigenes.
+
+**Vorverarbeitung gemessen, nicht geraten.** Die Modellbeschreibung nennt die Mel-Parameter nicht. Von 24 Varianten
+lieferten nur Leistungsspektren sinnvolle Stile (Mr. Brightside → Alternative Rock, In Da Club → Gangsta); mit
+Betragsspektrum wurden Rock und Hip-Hop als „Experimental/Noise“ gelesen. Die Standardwerte stehen in `MelOptions`.
+
+**Getestet (4 lokale Songs, nur bekannte Genres):** Mr. Brightside → Rock / Alternative Rock (0,40), In Da Club →
+Hip Hop / Gangsta (0,71), Get Busy → Reggae / Ragga (0,86), Teenage Dirtbag → Rock / Alternative Rock (0,27):
+4 von 4 im richtigen Hauptgenre. Das ist eine kleine Stichprobe, keine Genauigkeitsmessung.
+
+**Grenzen.** „Afro House“, „Melodic House“ und „Melodic Techno“ gibt es im Discogs-Vokabular nicht; das Modell
+kann sie nicht ausgeben (aus Tags werden sie verstanden). Viele Pop-Songs liegen unter 25 % und bleiben ohne
+Genre. Stimmung, Tanzbarkeit und Vocal-Anteil sind nicht umgesetzt.
+
+## 5. Smart Matching (`src/Library/SmartMatch.*`, `LibraryBrowser`)
+
+Schalter „Smart Match“ (an/aus, wird gemerkt) und Modus (Auto / Deck 1 / Deck 2 / Beide Decks) in der Browser-Leiste.
+Bezug im Modus Auto: das spielende Deck, sonst das zuletzt geladene; „Beide“ verlangt, dass ein Song zu beiden
+Decks passt (das schwächere Ergebnis zählt). Die Markierung folgt jedem Trackwechsel, Tempoänderung und Play/Pause;
+Filter und Sortierung bleiben unverändert, nur die Zeilen werden getönt (Balken links). Der Tooltip nennt den Grund.
+
+Bewertung (nur aus bekannten Werten, nichts wird ergänzt):
+- **Tempo:** Abweichung ≤ 3 % = 1,0; ≤ 6 % = 0,7; ≤ 10 % = 0,4; sonst 0. Half-/Double-Time zählt (Faktor 0,95).
+  Verglichen wird mit dem **hörbaren** Tempo des Bezugsdecks (inklusive Pitch).
+- **Tonart (Camelot):** gleich 1,0; relative Dur/Moll oder ein Schritt 0,9; zwei Schritte 0,5; sonst 0.
+- **Genre:** gleiches Genre 1,0; Haupt- und Untergenre 0,9; zwei Untergenres derselben Familie 0,75; verwandte
+  Familien (z. B. House–Techno 0,5, Pop–Rock 0,4); sonst 0. Quelle: eigenes Tag, sonst automatisches Genre ≥ 25 %.
+- **Grün:** Tempo ≥ 0,7 und Tonart ≥ 0,9 und Gesamt ≥ 0,85 und Genre bekannt-passend oder unbekannt.
+  **Blau:** Tempo ≥ 0,4, Gesamt ≥ 0,6, Tonart unbekannt oder ≥ 0,5. **Keine Farbe:** unpassende Tonart, Tempo zu weit
+  weg, unbekanntes Tempo, oder nur das Tempo ist bekannt.
+- **Zuverlässigkeit:** Ein automatisch erkannter Wert zählt nur ab Konfidenz BPM 0,35 / Tonart 0,25. Von Hand
+  gesetzte Werte und Werte aus den Datei-Tags zählen immer. Weil die Tonart-Erkennung bei Pop oft unsicher ist,
+  bleiben dann viele Songs unmarkiert – das ist gewollt und kein Fehler.
+
+## 6. BPM-Anzeige und Sync (Fehlerbericht „19 Smile“)
+
+**Ursache.** Die Bibliothek zeigte korrekt das Original (95,50 BPM, Konfidenz 100 %, nichts manuell). Das Deck zeigte
+die Wiedergabe-BPM (Original × Pitch) ohne Hinweis darauf. 122 BPM entstehen nur mit +27,75 % Pitch, und den
+setzte SYNC: Es zog das Tempo auf die andere Deck-BPM und erweiterte dafür den Pitch-Bereich still bis ±50 %,
+ohne Half-/Double-Time zu berücksichtigen. In der echten App nachgestellt (Smile auf Deck 1, 122-BPM-Track auf Deck 2).
+
+**Korrektur.** `DeckEngine::getOriginalBpm()` und `getPlaybackBpm()` trennen die beiden Werte. Das Deck zeigt groß die
+Wiedergabe-BPM und darunter „ORIG 95.50“ (gelb mit Pitch-Prozent, wenn gepitcht wird). SYNC rechnet vom Original
+gegen das hörbare Tempo des anderen Decks, berücksichtigt Half-/Double-Time (95,5 → 191 BPM = 0 % Pitch) und lehnt ab,
+wenn mehr als ±16 % nötig wären („TOO FAR“ auf dem Knopf, Tooltip mit Prozentwert); die Tonart würde sonst um
+mehrere Halbtöne wandern.
+
+## 7. Noch nicht umgesetzt
+
+Stimmung/Tanzbarkeit/Vocal-Anteil, Effekte, Slicer/Sampler/Scratch-Pads, Sideview (Sidelist, Automix, Sampler, Karaoke),
 Layouts, Mikrofon, Aufnahme, Keylock (Tempo ohne Tonhöhe), Quantize/Sync mit Beat-Phase, Beatgrid-Editor mit
 Tempo-Kurve, Einstellung des Stem-Cache-Limits und des Modellordners in der Oberfläche, ASIO.

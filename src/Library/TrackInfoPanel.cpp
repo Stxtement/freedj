@@ -98,6 +98,14 @@ TrackInfoPanel::TrackInfoPanel()
     saveButton.onClick = [this] { save(); };
     content.addAndMakeVisible (saveButton);
 
+    useDetectedGenreButton.setTooltip ("Copies the detected genre into the Genre field. Press Save to keep it as your own genre.");
+    useDetectedGenreButton.onClick = [this]
+    {
+        genre->setText (current.genreAutoSub.isNotEmpty() && current.genreAutoSub != current.genreAutoMain ? current.genreAutoMain + " / " + current.genreAutoSub : current.genreAutoMain,
+                        juce::sendNotification);
+    };
+    content.addAndMakeVisible (useDetectedGenreButton);
+
     setTrack (nullptr);
 }
 
@@ -149,6 +157,11 @@ void TrackInfoPanel::setTrack (const TrackRecord* track)
     set (title, current.title);   set (artist, current.artist);  set (remix, current.remix);
     set (album, current.album);   set (genre, current.genre);    set (comment, current.comment);
     set (tags, current.tags);     set (key, current.key);
+    genre->setTextToShowWhenEmpty (current.genreAutoMain.isNotEmpty()
+                                       ? "detected: " + (current.genreAutoSub.isNotEmpty() ? current.genreAutoMain + " / " + current.genreAutoSub : current.genreAutoMain)
+                                       : juce::String(),
+                                   Colours::textDim);
+    useDetectedGenreButton.setVisible (has && current.genre.isEmpty() && current.genreAutoMain.isNotEmpty());
     set (year, current.year > 0 ? juce::String (current.year) : juce::String());
     set (bpm, current.bpm > 0.0 ? juce::String (current.bpm, 2) : juce::String());
     stars.setRating (current.rating);
@@ -164,6 +177,24 @@ void TrackInfoPanel::setTrack (const TrackRecord* track)
               << "Last played: " << date (current.lastPlayed) << "\n"
               << "Play count: " << current.playCount << "\n"
               << current.path;
+        if (current.genreAutoMain.isNotEmpty())
+        {
+            stats << "\nGenre (detected): " << (current.genreAutoSub.isNotEmpty() ? current.genreAutoMain + " / " + current.genreAutoSub : current.genreAutoMain)
+                  << ", " << juce::roundToInt (current.genreConfidence * 100.0) << " %"
+                  << (current.genreConfidence < 0.25 ? " (too uncertain to be used)" : "");
+            if (auto* list = juce::JSON::parse (current.genreAlternatives).getArray())
+            {
+                juce::StringArray names;
+                for (const auto& a : *list)
+                    names.add (a.getProperty ("style", {}).toString().fromLastOccurrenceOf ("---", false, false) + " "
+                               + juce::String (juce::roundToInt ((double) a.getProperty ("p", 0.0) * 100.0)) + " %");
+                if (! names.isEmpty())
+                    stats << "\nAlso possible: " << names.joinIntoString (", ");
+            }
+        }
+        else if (current.genreVersion < 0)
+            stats << "\nGenre detection failed for this file";
+
         if (current.analysisVersion > 0)
         {
             stats << "\nAnalysis: BPM confidence " << juce::roundToInt (current.bpmConfidence * 100.0) << "%, key confidence "
@@ -286,7 +317,7 @@ void TrackInfoPanel::resized()
 
 void TrackInfoPanel::layoutContent (int width)
 {
-    constexpr int statsHeight = 150;
+    constexpr int statsHeight = 200;
     auto area = juce::Rectangle<int> (0, 0, width, 100000).reduced (10, 10);
     area.removeFromTop (getCoverSize (width) + 6);
 
@@ -304,6 +335,8 @@ void TrackInfoPanel::layoutContent (int width)
     auto buttons = area.removeFromTop (26);
     saveButton.setBounds (buttons.removeFromRight (70));
     writeToFileToggle.setBounds (buttons);
+    area.removeFromTop (4);
+    useDetectedGenreButton.setBounds (area.removeFromTop (24));
     area.removeFromTop (6);
     statsLabel.setBounds (area.removeFromTop (statsHeight));
 
